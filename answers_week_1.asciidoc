@@ -41,7 +41,7 @@ Some equivalences: +
 |`CWallet::CreateTransaction(...)` in wallet.cpp
 
 |`SendMoney()` in main.cpp
-|`WalletModel::sendCoins(...)` in walletmode.cpp or 
+|`WalletModel::sendCoins(...)` in walletmode.cpp or +  
 `CWallet::CommitTransaction(...)` in wallet.cpp
 
 |`CTransaction` in main.h
