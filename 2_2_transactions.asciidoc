@@ -1,0 +1,200 @@
+[[bitcoin-transaction]]
+== 2.1. Transaction
+
+The interface the user uses to send the coin to a Bitcoin address is implemented by `src/qt/sendcoinsdialog.cpp`. When the user clicks on the  'Send' button, the method `void SendCoinsDialog::on_sendButton_clicked()` is triggered.
+
+This method calls `bool SendCoinsDialog::PrepareSendText(...)`, which builds the transaction.
+
+[source,c++]  
+----
+void SendCoinsDialog::on_sendButton_clicked()
+{
+    if(!model || !model->getOptionsModel())
+        return;
+
+    QString question_string, informative_text, detailed_text;
+    if (!PrepareSendText(question_string, informative_text, detailed_text)) return;
+    assert(m_current_transaction);
+
+    // ...
+}
+----
+
+The interface allows users to add as many recipients as they want. Each of them is handled by the `SendCoinsEntry` class.
+This class is a subclass of QStackedWidget ann represents a single entry in the dialog for sending bitcoins.
+
+The method `SendCoinsEntry::validate(...)` makes some basic verification like verifying the address, checking that the amount is different from 0 and rejecting dust values.
+
+`SendCoinsEntry::getValue()`` returns a `SendCoinsRecipient` instance (object), that represents all the information inserted by user on the screen, like `address` of the recipient, `label` and `amount`. 
+
+For every `SendCoinsEntry` (recipent) user inserted, a `SendCoinsRecipient` is created by calling `SendCoinsEntry::getValue()`. Those `SendCoinsRecipient` instances are allocated in a list `QList<SendCoinsRecipient> recipients`.
+
+The recipients list is passed as argument to create a new `WalletModelTransaction` and assign it to the `m_current_transaction` property of `SendCoinsDialog` object.
+
+The next command updates the state of the m_coin_control, that is a property of the class that is a instance of `CCoinControl` class and it is designed to allow user to customize some features of the transactions, as custom change destination, BIP 125 (RBF) and selecting which UTXO to spend.
+
+Then the method `WalletModel::prepareTransaction(...)` is called to create the transaction.
+
+[source,c++]  
+----
+bool SendCoinsDialog::PrepareSendText(QString& question_string, QString& informative_text, QString& detailed_text)
+{
+    // ...
+
+    m_current_transaction = std::make_unique<WalletModelTransaction>(recipients);
+    WalletModel::SendCoinsReturn prepareStatus;
+
+    updateCoinControlState(*m_coin_control);
+
+    prepareStatus = model->prepareTransaction(*m_current_transaction, *m_coin_control);
+
+    // ...
+}
+----
+
+=== CScript
+
+The process of creating transaction involves multiple steps. The first one we will look over is the creation of the `scriptPubKey` for each recipient.
+
+A `scriptPubKey` (more easily thought of as a “locking script”) is a script that you put on an output to prevent others from spending it. Only the recipient will be ablet to solve the script and spend the output.
+
+There are a few set patterns of locking scripts that are commonly used in bitcoin: `Pay To Pubkey (P2PK)`, `Pay To Pubkey Hash (P2PKH)`, `Pay To Multisig (P2MS)`, `Pay To Script Hash (P2SH), NULL DATA (provably unspendable)`, `Pay To Witness Public Key Hash (P2WPKH)` and `Pay to Witness Script Hash (P2WSH)`.
+
+Each of those patterns has a instructions set implemented in a programming language called `Script`, that is simple, stack-based, and processed from left to right. It is intentionally not Turing-complete, with no loops. 
+
+The table below shows the commands of each pattern.
+
+[%autowidth]
+|===
+|Script |ScriptPubKey Instructions Set 
+
+|P2PK
+|`<pubKey>` `OP_CHECKSIG`
+
+|P2PKH
+|`<pubKey>` `OP_DUP` `OP_HASH160` `<pubKeyHash>` `OP_EQUALVERIFY` `OP_CHECKSIG` 
+
+|P2MS
+|`OP_M` `<pubKey1>` `<pubKey2>` `...` `<pubKeyN>` `OP_N` `OP_CHECKMULTISIG`
+
+|P2SH
+|`OP_HASH160` `scriptHash` `OP_EQUAL`
+
+|NULL DATA
+|`OP_RETURN` `arbitrary data`
+
+|P2WPKH
+|`OP_0` `20-byte hash`
+
+|P2WSH
+|`OP_0` `32-byte hash`
+|===
+
+So how does Bitcoin Core know which scriptPubKey is the most suitable for the address inserted by the user ? There's some patterns in the address format that helps identify it. The forementioned function `WalletModel::prepareTransaction(...)` calls another function called `DecodeDestination(...)` that will try to find those patterns and will return a data type called `CTxDestination` based on the result.
+
+[source,c++]  
+----
+WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransaction &transaction, const CCoinControl& coinControl)
+{
+    CAmount total = 0;
+    bool fSubtractFeeFromAmount = false;
+    QList<SendCoinsRecipient> recipients = transaction.getRecipients();
+    std::vector<CRecipient> vecSend;
+
+    // some validations
+
+    // Pre-check input data for validity
+    for (const SendCoinsRecipient &rcp : recipients)
+    {
+        if (rcp.fSubtractFeeFromAmount)
+            fSubtractFeeFromAmount = true;
+        {   // User-entered bitcoin address / amount:
+            
+            // more validations
+
+            CScript scriptPubKey = GetScriptForDestination(DecodeDestination(rcp.address.toStdString()));
+
+            CRecipient recipient = {scriptPubKey, rcp.amount, rcp.fSubtractFeeFromAmount};
+
+            vecSend.push_back(recipient);
+
+            total += rcp.amount;
+        }
+    }
+
+    // ...
+----
+
+`CTxDestination` is an instance of `std::variant`, what allows it to hold multiple types of data. It can hold the following types: `CNoDestination`, `PKHash`, `ScriptHash`, `WitnessV0ScriptHash`, `WitnessV0KeyHash` and `WitnessUnknown`. + 
+They represent internal data types encoded in a bitcoin address. The table below shows the variant type and its equivalent locking script (which is called `destination` throughout the code).
+
+[%autowidth]
+|===
+|Type | Destination 
+
+|CNoDestination
+|no destination set
+
+|PKHash
+|TxoutType::PUBKEYHASH destination (P2PKH)
+
+|ScriptHash
+|TxoutType::SCRIPTHASH destination (P2SH)
+
+|WitnessV0ScriptHash
+|TxoutType::WITNESS_V0_SCRIPTHASH destination (P2WSH)
+
+|WitnessV0KeyHash
+|TxoutType::WITNESS_V0_KEYHASH destination (P2WPKH)
+
+|WitnessUnknown
+|TxoutType::WITNESS_UNKNOWN/WITNESS_V1_TAPROOT destination (P2W???)
+|===
+
+`PKHash`, `ScriptHash` and `WitnessV0KeyHash` are subclass of `BaseHash<uint160>`. + 
+`WitnessV0ScriptHash` is subclass of `BaseHash<uint256>`. + 
+`CNoDestination` and `WitnessUnknown` have no superclass.
+
+
+`BaseHash<HashType>` implements basic hash operations. An `uint256` holds a 256-bit hash code. It contains an `uint8_t` array of length 256/32=8 to hold the hash code. Another similar data structure `uint160`, defined in the same header file, holds a 160-bit hash code. It has an unsignedint array of length 160/32=5 to hold the hash code. These two classes share the same base class `base_blob`.
+
+// continue with DecodeDestination
+
+Now that we've seen the data structures involved in the decoding process, let's look at the function `CTxDestination DecodeDestination(...)` in more detail. This function is locate at `/src/key_io.cpp` file.
+
+[source,c++]  
+----
+CTxDestination DecodeDestination(const std::string& str, const CChainParams& params, std::string& error_str)
+{
+    std::vector<unsigned char> data;
+    uint160 hash;
+    error_str = "";
+    if (DecodeBase58Check(str, data, 21)) {
+        // base58-encoded Bitcoin addresses.
+        // Public-key-hash-addresses have version 0 (or 111 testnet).
+        // The data vector contains RIPEMD160(SHA256(pubkey)), where pubkey is the serialized public key.
+        const std::vector<unsigned char>& pubkey_prefix = params.Base58Prefix(CChainParams::PUBKEY_ADDRESS);
+        if (data.size() == hash.size() + pubkey_prefix.size() && std::equal(pubkey_prefix.begin(), pubkey_prefix.end(), data.begin())) {
+            std::copy(data.begin() + pubkey_prefix.size(), data.end(), hash.begin());
+            return PKHash(hash);
+        }
+        // Script-hash-addresses have version 5 (or 196 testnet).
+        // The data vector contains RIPEMD160(SHA256(cscript)), where cscript is the serialized redemption script.
+        const std::vector<unsigned char>& script_prefix = params.Base58Prefix(CChainParams::SCRIPT_ADDRESS);
+        if (data.size() == hash.size() + script_prefix.size() && std::equal(script_prefix.begin(), script_prefix.end(), data.begin())) {
+            std::copy(data.begin() + script_prefix.size(), data.end(), hash.begin());
+            return ScriptHash(hash);
+        }
+
+        // Set potential error message.
+        // This message may be changed if the address can also be interpreted as a Bech32 address.
+        error_str = "Invalid prefix for Base58-encoded address";
+    }
+    // more code
+----
+
+The first part of the function handles the cases of the P2PKH or the P2SH. As mentioned previously, P2PK or P2SH are base58-encoded addess. So the first thing that code snippet above does is check if the address inserted by user is compatible with base58 format v `if (DecodeBase58Check(str, data, 21))`.
+
+
+
+
