@@ -22,7 +22,7 @@ _Q: You used to be able to send a IP address, why was that discontinued?_
 A: It is unsafe. The implementation provided no authentication, so any "man in the middle" could have intercepted your bitcoins during the transaction. When they see that you're sending a Bitcoin payment by IP address, they pretend to be the actual destination and send back their Bitcoin address. You end up sending bitcoins to the wrong person. It's therefore no longer a good idea to send bitcoins in this way, especially if you're using a proxy. (https://en.bitcoin.it/wiki/IP_transaction)
 
 _Q: What do the different address prefixes represent?_ + 
-A: At the time the book was written there was only onde address prefix, that starts with "1" and represents a base58 encoded hash (RIPEMD160 and SHA256) of a public key (`P2PKH)``.
+A: At the time the book was written there was only onde address prefix, that starts with "1" and represents a base58 encoded hash (RIPEMD160 and SHA256) of a public key (`P2PKH`).
 Today, there are: + 
 . `P2SH`, that start with "3" and it is a base58 encoded hash (RIPEMD160 and SHA256)  of a redeemScript. + 
 . `Segwit` Format, that starts with "bc1" and it is encoded using BECH32 instead of base58.
@@ -33,9 +33,9 @@ Most of the methods seen in this chapter that was in main.cpp went to wallet.cpp
 
 Some equivalences: +
 
-CreateTransaction() in main.cpp ->  CWallet::CreateTransaction(...) in wallet.cpp + 
-SendMoney() in main.cpp -> WalletModel::sendCoins(...) in walletmode.cpp or CWallet::CommitTransaction(...) in wallet.cpp + 
-CTransaction in main.h -> class CTransaction in transaction.h
+`CreateTransaction()` in main.cpp ->  `CWallet::CreateTransaction(...)` in wallet.cpp + 
+`SendMoney()` in main.cpp -> `WalletModel::sendCoins(...)` in walletmode.cpp or `CWallet::CommitTransaction(...)` in wallet.cpp + 
+`CTransaction` in main.h -> `class CTransaction` in transaction.h
 
 
 _Q: To construct a transaction you need to know the fee, but you only know the size of the transaction after the transaction has been constructed -- so how do you determine the fee?_ + 
