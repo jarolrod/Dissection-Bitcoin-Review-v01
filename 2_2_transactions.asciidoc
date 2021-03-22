@@ -66,7 +66,7 @@ The table below shows the commands of each pattern.
 
 [%autowidth]
 |===
-|Script |ScriptPubKey Instructions Set 
+|Script |ScriptPubKey Instructions 
 
 |P2PK
 |`<pubKey>` `OP_CHECKSIG`
