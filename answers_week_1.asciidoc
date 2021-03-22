@@ -29,13 +29,25 @@ Today, there are: +
 
 _Q: Main.cpp has since been broken up. When did that happen? Why?Where are things now?_ + 
 A: The project became more complex and the file main.cpp was splitted into more modules.
-Most of the methods seen in this chapter that was in main.cpp went to wallet.cpp.
+Most of the methods seen in this chapter that were in main.cpp went to wallet.cpp.
 
 Some equivalences: +
 
-`CreateTransaction()` in main.cpp ->  `CWallet::CreateTransaction(...)` in wallet.cpp + 
-`SendMoney()` in main.cpp -> `WalletModel::sendCoins(...)` in walletmode.cpp or `CWallet::CommitTransaction(...)` in wallet.cpp + 
-`CTransaction` in main.h -> `class CTransaction` in transaction.h
+[%autowidth]
+|===
+|In the Book | Current version
+
+|`CreateTransaction()` in main.cpp
+|`CWallet::CreateTransaction(...)` in wallet.cpp
+
+|`SendMoney()` in main.cpp
+|`WalletModel::sendCoins(...)` in walletmode.cpp or 
+`CWallet::CommitTransaction(...)` in wallet.cpp
+
+|`CTransaction` in main.h
+|`class CTransaction` in transaction.h
+
+|===
 
 
 _Q: To construct a transaction you need to know the fee, but you only know the size of the transaction after the transaction has been constructed -- so how do you determine the fee?_ + 
