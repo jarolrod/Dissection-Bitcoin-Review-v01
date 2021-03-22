@@ -1,0 +1,49 @@
+_Q: How is Hungarian notation used in the code base?_ + 
+A: The Hungarian notation is used to indicate the data type and if the variable is member variable of a struct or class.
+
+[source,c++]  
+----
+string strName = dialog.GetValue();
+string strAddress = PubKeyToAddress(GenerateNewKey());
+m_listCtrl->SetFocus();
+mapKeys[key.GetPubKey()] = key.GetPrivKey();
+----
+
+_Q: What is the procedure for generating a Bitcoin address?_ + 
+A: When user clicks on “New Address”, GenerateNewKey() in main.cpp is triggered to generate a new public-private key pair, and then calls PubKeyToAddress() in base58.h to generate a string representation strAddress of the newly generated public key (line 9).
+This function passes the 65 bits public key to Hash160() in util.h (line 10), which returns the hash of the public key. It then passes the returned hash to Hash160ToAddress() in base58.h to get a string representation of the hash (line 10). The final string is a Bitcoin address, which looks like a long string of random letters and numbers. To give an example, `171zNQDkKGpbvbLHHyJD4Csg393er4xnT6` is a Bitcoin address.
+
+_Q: What does a COutPoint represent?_ + 
+Each input slot (of type CTxIn) of a transaction Tx contains a COutPoint object prevout, which refers to an output slot of a source-transaction of Tx. A source-transaction of Tx is a transaction from which Tx gets the coins it is about to spend. A transaction Tx can have an arbitrary number of source-transactions.
+The class class COutPoint has 2 fields: uint256 hash and unsigned int n.
+The first one (hash) refers to the id of the transaction to be spent and the n refers to the output position of the source-transaction that will be spent.
+
+_Q: You used to be able to send a IP address, why was that discontinued?_
+A: It is unsafe. The implementation provided no authentication, so any "man in the middle" could have intercepted your bitcoins during the transaction. When they see that you're sending a Bitcoin payment by IP address, they pretend to be the actual destination and send back their Bitcoin address. You end up sending bitcoins to the wrong person. It's therefore no longer a good idea to send bitcoins in this way, especially if you're using a proxy. (https://en.bitcoin.it/wiki/IP_transaction)
+
+_Q: What do the different address prefixes represent?_ + 
+A: At the time the book was written there was only onde address prefix, that starts with "1" and represents a base58 encoded hash (RIPEMD160 and SHA256) of a public key (`P2PKH)``.
+Today, there are: + 
+. `P2SH`, that start with "3" and it is a base58 encoded hash (RIPEMD160 and SHA256)  of a redeemScript. + 
+. `Segwit` Format, that starts with "bc1" and it is encoded using BECH32 instead of base58.
+
+_Q: Main.cpp has since been broken up. When did that happen? Why?Where are things now?_ + 
+A: The project became more complex and the file main.cpp was splitted into more modules.
+Most of the methods seen in this chapter that was in main.cpp went to wallet.cpp.
+
+Some equivalences: +
+
+CreateTransaction() in main.cpp ->  CWallet::CreateTransaction(...) in wallet.cpp + 
+SendMoney() in main.cpp -> WalletModel::sendCoins(...) in walletmode.cpp or CWallet::CommitTransaction(...) in wallet.cpp + 
+CTransaction in main.h -> class CTransaction in transaction.h
+
+
+_Q: To construct a transaction you need to know the fee, but you only know the size of the transaction after the transaction has been constructed -- so how do you determine the fee?_ + 
+A: To construct a new transaction, you must know the transaction fee; but the transaction fee can only be determined after you have a fully constructed transaction. To break this cycle, a local variable nFee is used to hold an “estimated” transaction fee; and a new transaction is constructed based on the estimate. After the construction, the real transaction fee is calculated and compared with the estimate. If the estimate is less than the real, changed the estimate to the calculated transaction fee and start all over.
+
+_Q: There are a bunch of instance of locks on cs_main, why such big locks? What other threads we we be concerned about?_ + 
+A: There are multiple threads in the applications, that handle network, GUI, database, etc ... and also there are global variables.
+To avoid corrupting a global variable that is shared among multiple threads, any thread must acquire a lock first before making any changes to the global variable. A lock is defined for each global variable. For example, lock cs_mapKeys is defined for mapKeys and mapPubKeys
+
+_Q: Why is randomizing the order of the outputs important?_ + 
+A:For privacy. If there's a pattern, an observer can infer what is the amount of the change and of the payment in the transaction.
