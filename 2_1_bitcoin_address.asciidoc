@@ -86,6 +86,14 @@ Pay to script hash (P2SH) address format were standardised in https://github.com
 
     base58-encode: RIPEMD160(SHA256(redeemScript))
 
+.Why base-58 instead of standard base-64 encoding?
+[TIP]
+===============================
+* Don't want 0OIl characters that look the same in some fonts and could be used to create visually identical looking data.
+* A string with non-alphanumeric characters is not as easily accepted as input. + 
+* Double-clicking selects the whole string as one word if it's all alphanumeric.
+===============================
+
 BECH32 is a segwit address format specified by https://github.com/bitcoin/bips/blob/master/bip-0173.mediawiki[BIP 0173]. This address format is also known as "bc1 addresses". It is encoded using _BECH32_ instead of base58check and the witness program is `Hash160(pubkey)` for P2WPKH, and `Hash256(witness_script)` for P2WPKH. For native segwit outputs the scriptPubKey is `OP_0 <witness_program>``; for P2SH-wrapped segwit outputs the redeemScript is `OP_0 <witness_program>`. More details in https://bitcoin.stackexchange.com/a/95236[this answer in the bitcoin.stackexchange ].
 
     bech32: ["bc"][witness version] base32:[witness program]

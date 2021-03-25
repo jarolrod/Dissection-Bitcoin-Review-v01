@@ -193,7 +193,135 @@ CTxDestination DecodeDestination(const std::string& str, const CChainParams& par
     // more code
 ----
 
-The first part of the function handles the cases of the P2PKH or the P2SH. As mentioned previously, P2PK or P2SH are base58-encoded addess. So the first thing that code snippet above does is check if the address inserted by user is compatible with base58 format v `if (DecodeBase58Check(str, data, 21))`.
+The first part of the function handles the cases of the P2PKH or the P2SH. As mentioned previously, P2PK or P2SH are base58-encoded addess. So the first thing that code snippet above does is check if the address inserted by user is compatible with base58 format `if (DecodeBase58Check(str, data, 21))`. The file that implements the base58 functions is `src/base58.cpp`.
+
+If base58 decoding is successful, then the function tries to check if it is a Public-key-hash-addresses (`RIPEMD160(SHA256(pubkey))`) or a Script-hash-addresses (`RIPEMD160(SHA256(cscript))`). To do it, the `CChainParams::PUBKEY_ADDRESS` and `CChainParams::SCRIPT_ADDRESS` are used. The PKH addresses have version 0 (or 111 testnet) and SH addresses have version 5 (or 196 testnet). It can be verified in the file `src/chainparams.cpp`.
+
+The function will return `PKHash(hash)` or `ScriptHash(hash)` if one of those conditions is met. Since PKH and SH are 160-bit RIPEMD-160 hashes, both are subclasses of BaseHash<uint160>. They are defined in the file `src/standard.cpp`.
+
+[source,c++]  
+----
+struct PKHash : public BaseHash<uint160>
+{
+    PKHash() : BaseHash() {}
+    explicit PKHash(const uint160& hash) : BaseHash(hash) {}
+    explicit PKHash(const CPubKey& pubkey);
+    explicit PKHash(const CKeyID& pubkey_id);
+};
+
+// ...
+
+struct ScriptHash : public BaseHash<uint160>
+{
+    ScriptHash() : BaseHash() {}
+    // These don't do what you'd expect.
+    // Use ScriptHash(GetScriptForDestination(...)) instead.
+    explicit ScriptHash(const WitnessV0KeyHash& hash) = delete;
+    explicit ScriptHash(const PKHash& hash) = delete;
+
+    explicit ScriptHash(const uint160& hash) : BaseHash(hash) {}
+    explicit ScriptHash(const CScript& script);
+    explicit ScriptHash(const CScriptID& script);
+};
+----
+
+`CChainParams` defines various tweakable parameters of a given instance of the Bitcoin system, such as `powLimit`, `nSubsidyHalvingInterval`, `nPowTargetTimespan`, `checkpointData` and the DNS Seeds. + 
+There are four `CChainParams`: the main network (`class CMainParams`), public test network (`class CTestNetParams`), regression test mode (`CRegTestParams`) and the new test network called Signet which adds an additional signature requirement to block validation (class `SigNetParams`).
+
+[source,c++]  
+----
+class CMainParams : public CChainParams {
+    base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,0);
+    base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,5);
+    // ...
+    bech32_hrp = "bc";
+    // ...
+    m_is_test_chain = false;
+    //...
+}
+class CTestNetParams : public CChainParams {
+    // ...
+    base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,111);
+    base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,196);
+    // ...
+    bech32_hrp = "bc";
+    // ...
+    m_is_test_chain = true;
+    //...
+}
+----
+
+If the address is not base58 encoded, the content of the `data` variable is cleared and then decode the address using bech32 in the line `auto bech = bech32::Decode(str);`. The file that implements the bech32 functions are in the `src/bech32.cpp` file.
+
+[source,c++]  
+----
+CTxDestination DecodeDestination(const std::string& str, const CChainParams& params)
+{
+    std::cout << str << std::endl;
+    std::vector<unsigned char> data;
+    uint160 hash;
+    // ... code that checks the address is a PKH or a SH
+    data.clear();
+    auto bech = bech32::Decode(str);
+    if (bech.second.size() > 0 && bech.first == params.Bech32HRP()) {
+        // Bech32 decoding
+        int version = bech.second[0]; // The first 5 bit symbol is the witness version (0-16)
+        // The rest of the symbols are converted witness program bytes.
+        data.reserve(((bech.second.size() - 1) * 5) / 8);
+        if (ConvertBits<5, 8, false>([&](unsigned char c) { data.push_back(c); }, bech.second.begin() + 1, bech.second.end())) {
+            if (version == 0) {
+                {
+                    WitnessV0KeyHash keyid;
+                    if (data.size() == keyid.size()) {
+                        std::copy(data.begin(), data.end(), keyid.begin());
+                        return keyid;
+                    }
+                }
+                {
+                    WitnessV0ScriptHash scriptid;
+                    if (data.size() == scriptid.size()) {
+                        std::copy(data.begin(), data.end(), scriptid.begin());
+                        return scriptid;
+                    }
+                }
+                return CNoDestination();
+            }
+            if (version > 16 || data.size() < 2 || data.size() > 40) {
+                return CNoDestination();
+            }
+            WitnessUnknown unk;
+            unk.version = version;
+            std::copy(data.begin(), data.end(), unk.program);
+            unk.length = data.size();
+            return unk;
+        }
+    }
+    return CNoDestination();
+}
+----
+
+// TODO: Check
+// data.reserve(((bech.second.size() - 1) * 5) / 8);
+// if (ConvertBits<5, 8, false>([&](unsigned char c) { data.push_back(c); }, bech.second.begin() + 1, bech.second.end())) 
+
+The variable `bech` is a `std::pair<std::string, std::vector<uint8_t>>` type. The fist element `bech.first` (`std::string`) is the HRP (human-readable part) and the second (`std::vector<uint8_t>`) is the data (the witness program bytes). In the mainnet, HRP has the value "bc", in the signet or testnet, the value is "tb" and in the regression test, it is "bcrt". Those values can be checked in the aforementioned class `CChainParams`.
+
+The next steps are:
+
+. Extract the witness version `int version = bech.second[0]`.
+. Check if the version is 0. There's no current implementation for others witness versions.
+. If the data (witness program) size is 20-byte , then a `WitnessV0KeyHash` instance is returned.
+. If the data (witness program) size is 32-byte , then a `WitnessV0ScriptHash` instance is returned.
+
+If none these conditions are not met, it will return a `WitnessUnknown()` instance if the address is a valid bech32 one. Else it will return `CNoDestination` instance.
+
+
+
+
+
+
+
+
 
 
 
