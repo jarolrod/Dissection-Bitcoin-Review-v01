@@ -125,6 +125,8 @@ WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransact
     // ...
 ----
 
+=== DecodeDestination
+
 `CTxDestination` is an instance of `std::variant`, what allows it to hold multiple types of data. It can hold the following types: `CNoDestination`, `PKHash`, `ScriptHash`, `WitnessV0ScriptHash`, `WitnessV0KeyHash` and `WitnessUnknown`. + 
 They represent internal data types encoded in a bitcoin address. The table below shows the variant type and its equivalent locking script (which is called `destination` throughout the code).
 
@@ -157,8 +159,6 @@ They represent internal data types encoded in a bitcoin address. The table below
 
 
 `BaseHash<HashType>` implements basic hash operations. An `uint256` holds a 256-bit hash code. It contains an `uint8_t` array of length 256/32=8 to hold the hash code. Another similar data structure `uint160`, defined in the same header file, holds a 160-bit hash code. It has an unsignedint array of length 160/32=5 to hold the hash code. These two classes share the same base class `base_blob`.
-
-// continue with DecodeDestination
 
 Now that we've seen the data structures involved in the decoding process, let's look at the function `CTxDestination DecodeDestination(...)` in more detail. This function is locate at `/src/key_io.cpp` file.
 
@@ -315,7 +315,7 @@ The next steps are:
 
 If none these conditions are met, it will return a `WitnessUnknown()` instance if the address has a valid bech32 format. Else it will return `CNoDestination` instance.
 
-
+// continue in WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransaction &transaction, const CCoinControl& coinControl) ln 178
 
 
 
