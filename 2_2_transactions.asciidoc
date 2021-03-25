@@ -313,7 +313,7 @@ The next steps are:
 . If the data (witness program) size is 20-byte , then a `WitnessV0KeyHash` instance is returned.
 . If the data (witness program) size is 32-byte , then a `WitnessV0ScriptHash` instance is returned.
 
-If none these conditions are not met, it will return a `WitnessUnknown()` instance if the address is a valid bech32 one. Else it will return `CNoDestination` instance.
+If none these conditions are met, it will return a `WitnessUnknown()` instance if the address has a valid bech32 format. Else it will return `CNoDestination` instance.
 
 
 
