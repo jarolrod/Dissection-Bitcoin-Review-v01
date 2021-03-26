@@ -1,9 +1,9 @@
 [[bitcoin-transaction]]
 == 2.1. Transaction
 
-The interface the user uses to send the coin to a Bitcoin address is implemented by `src/qt/sendcoinsdialog.cpp`. When the user clicks on the  'Send' button, the method `void SendCoinsDialog::on_sendButton_clicked()` is triggered.
+The interface the user uses to send the coin to a Bitcoin address is implemented by `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsdialog.cpp[src/qt/sendcoinsdialog.cpp]`. When the user clicks on the  'Send' button, the method `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsdialog.cpp#L371[void SendCoinsDialog::on_sendButton_clicked()]` is triggered.
 
-This method calls `bool SendCoinsDialog::PrepareSendText(...)`, which builds the transaction.
+This method calls `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsdialog.cpp#L225[bool SendCoinsDialog::PrepareSendText(...)]`, which builds the transaction.
 
 [source,c++]  
 ----
@@ -20,16 +20,16 @@ void SendCoinsDialog::on_sendButton_clicked()
 }
 ----
 
-The interface allows users to add as many recipients as they want. Each of them is handled by the `SendCoinsEntry` class.
-This class is a subclass of QStackedWidget ann represents a single entry in the dialog for sending bitcoins.
+The interface allows users to add as many recipients as they want. Each of them is handled by the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsdialog.h#L18[SendCoinsEntry]` class.
+This class is a subclass of QStackedWidget and represents a single entry in the dialog for sending bitcoins.
 
-The method `SendCoinsEntry::validate(...)` makes some basic verification like verifying the address, checking that the amount is different from 0 and rejecting dust values.
+The method `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsentry.cpp#L132[SendCoinsEntry::validate(...)]` makes some basic verification such as verifying the address, checking that the amount is different from 0 and rejecting dust values.
 
-`SendCoinsEntry::getValue()`` returns a `SendCoinsRecipient` instance (object), that represents all the information inserted by user on the screen, like `address` of the recipient, `label` and `amount`. 
+`https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsentry.cpp#L167[SendCoinsEntry::getValue()]` returns a `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsrecipient.h[SendCoinsRecipient]` instance (object), that represents all the information inserted by user on the screen, like `address` of the recipient, `label` and `amount`. 
 
-For every `SendCoinsEntry` (recipent) user inserted, a `SendCoinsRecipient` is created by calling `SendCoinsEntry::getValue()`. Those `SendCoinsRecipient` instances are allocated in a list `QList<SendCoinsRecipient> recipients`.
+For every `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsdialog.h#L18[SendCoinsEntry]` (recipent) that user inserted, a `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsrecipient.h[SendCoinsRecipient]` is created by calling `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsentry.cpp#L167[SendCoinsEntry::getValue()]`. Those `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsrecipient.h[SendCoinsRecipient]` instances are allocated in a list `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsdialog.cpp#L227[QList<SendCoinsRecipient> recipients]`.
 
-The recipients list is passed as argument to create a new `WalletModelTransaction` and assign it to the `m_current_transaction` property of `SendCoinsDialog` object.
+The recipients list is passed as argument to create a new `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/walletmodeltransaction.h#L22[WalletModelTransaction]` and assign it to the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsdialog.h#L66[m_current_transaction]` property of the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/qt/sendcoinsdialog.h#L31[SendCoinsDialog]` object.
 
 The next command updates the state of the m_coin_control, that is a property of the class that is a instance of `CCoinControl` class and it is designed to allow user to customize some features of the transactions, as custom change destination, BIP 125 (RBF) and selecting which UTXO to spend.
 

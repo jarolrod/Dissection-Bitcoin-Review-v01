@@ -98,6 +98,22 @@ BECH32 is a segwit address format specified by https://github.com/bitcoin/bips/b
 
     bech32: ["bc"][witness version] base32:[witness program]
 
+An interesting point about the segwit address format is that `Hash160` is _not_ used when address is originated from script, only from a public key. Why ? +
+Both `P2PKH` and `P2WPKH` have 160-bit hashes and since only a single key is involved from one party, we need only be concerned with preimage collisions, for which it has a 160-bit level of security. Anything over 100 bits is considered secure. +
+`P2SH` (3... addresses) hash 160-bit hashes and if the script all the keys are fully created by the same person, is the same case mentioned above: 160-bits of security from preimage resistance. However for general classes of scripts and when there are multiple people involved, collision attacks may be possible which reduce security thresholds to a 2^80 bits of work, which is concerning even if it is not (currently) feasible. +
+`P2WSH` (bech32, version 0, 32 bytes) is like the segwit version of `P2SH`, but instead of using `RIPEMD-160` as the last step, it uses SHA-256, resulting in a 256-bit hash. It therefore has 128 bits of collision resistance out of the box, making any script secure from hash collisions no matter the protocol used to construct it. +
+More details about this interesting question can be found in the _u/maaku7's_ https://www.reddit.com/r/Bitcoin/comments/74tonn/bech32_native_segwit_address_already_used_on_the/dqlogru/[informative answer]  in Reddit. 
+
+.Why Bech32 instead of standard base-58 encoding?
+[TIP]
+===============================
+* Base58 needs a lot of space in QR codes, as it cannot use the alphanumeric mode.
+* The mixed case in base58 makes it inconvenient to reliably write down, type on mobile keyboards, or read out loud.
+* The double SHA256 checksum is slow and has no error-detection guarantees.
+* Most of the research on error-detecting codes only applies to character-set sizes that are a prime power, which 58 is not.
+* Base58 decoding is complicated and relatively slow.
+===============================
+
 At the time the book _A Dissection of Bitcoin_ was written, there was only one address type, the LEGACY / P2PKH. This can be seen in the code snippet below (located in the page 11):
 
     mapPubKeys[Hash160(key.GetPubKey())]= key.GetPubKey()
@@ -182,15 +198,92 @@ bool CWallet::GetNewDestination(const OutputType type, const std::string label, 
 ----
 === LegacyScriptPubKeyMan::GetNewDestination
 
-If the wallet is legacy, the method used to get a new key will be `LegacyScriptPubKeyMan::GetNewDestination`, that calls three functions: `GetKeyFromPool`, `LearnRelatedScripts` and `GetDestinationForKey`.
+If the wallet is legacy, the method used to get a new key will be `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.cpp#L18[LegacyScriptPubKeyMan::GetNewDestination]`, that calls three functions: `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.cpp#L1324[GetKeyFromPool]`, `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.cpp#L1392[LearnRelatedScripts]` and `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/outputtype.cpp#L49[GetDestinationForKey]`.
 
-`GetKeyFromPool` is a method of `LegacyScriptPubKeyMan` class and fetches a key from the keypool through the method `ReserveKeyFromKeyPool`. If this one fails (empty keypool) or the wallet contains no HD seed, no private keys or no scripts (flag `WALLET_FLAG_DISABLE_PRIVATE_KEYS`), it calls `LegacyScriptPubKeyMan::GenerateNewKey(...)`.
+[source,c++]  
+---- 
+bool LegacyScriptPubKeyMan::GetNewDestination(const OutputType type, CTxDestination& dest, std::string& error)
+{
+    LOCK(cs_KeyStore);
+    error.clear();
 
-`LegacyScriptPubKeyMan::GenerateNewKey(...)` is very interesting. If HD Wallet is enabled, it calls `LegacyScriptPubKeyMan::DeriveNewChildKey(...)` to get keys. Else it calls `CKey::MakeNewKey(...)`.
+    // Generate a new key that is added to wallet
+    CPubKey new_key;
+    if (!GetKeyFromPool(new_key, type)) {
+        error = _("Error: Keypool ran out, please call keypoolrefill first").translated;
+        return false;
+    }
+    LearnRelatedScripts(new_key, type);
+    dest = GetDestinationForKey(new_key, type);
+    return true;
+}
+----
 
-`LearnRelatedScripts` makes the wallet learn the related scripts for outputs to the given key. This is purely to make the wallet file compatible with older software.
+`https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.cpp#L1324[GetKeyFromPool]` is a method of `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.h#L256[LegacyScriptPubKeyMan]` class and fetches a key from the keypool through the method `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.cpp#L1346[ReserveKeyFromKeyPool]`. If this one fails (empty keypool) or the wallet contains no HD seed, no private keys or no scripts (flag `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/walletutil.h#L47[WALLET_FLAG_DISABLE_PRIVATE_KEYS]`), it calls `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.cpp#L18[LegacyScriptPubKeyMan::GenerateNewKey(...)]`, which is a very interesting method. Here the new keys will be created. If HD Wallet is enabled, `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.cpp#L1057[LegacyScriptPubKeyMan::DeriveNewChildKey(...)]` is called to get keys. Else it calls `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/key.cpp#L157[CKey::MakeNewKey(...)]`.
 
-`GetDestinationForKey`  gets a destination (address) of the requested type (if possible) to the specified key. Examples of types are `PKHash`, `WitnessV0KeyHash (Segwit)` or `ScriptHash`.
+[source,c++]  
+---- 
+bool LegacyScriptPubKeyMan::GetKeyFromPool(CPubKey& result, const OutputType type, bool internal)
+{
+   // ...
+        if (!ReserveKeyFromKeyPool(nIndex, keypool, internal) && !m_storage.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) {
+            // ...
+            result = GenerateNewKey(batch, m_hd_chain, internal);
+            return true;
+        }
+    //..
+    return true;
+}
+---- 
+
+[source,c++]  
+---- 
+CPubKey LegacyScriptPubKeyMan::GenerateNewKey(WalletBatch &batch, CHDChain& hd_chain, bool internal)
+{
+    // ...
+
+    // use HD key derivation if HD was enabled during wallet creation and a seed is present
+    if (IsHDEnabled()) {
+        DeriveNewChildKey(batch, metadata, secret, hd_chain, (m_storage.CanSupportFeature(FEATURE_HD_SPLIT) ? internal : false));
+    } else {
+        secret.MakeNewKey(fCompressed);
+    }
+
+    // ...
+
+    return pubkey;
+}
+---- 
+
+// Increase the coverage of ---- GenerateNewKey(): LegacyScriptPubKeyMan::IsHDEnabled(), LegacyScriptPubKeyMan::DeriveNewChildKey() and CKey::MakeNewKey() methods.
+
+
+
+`https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/wallet/scriptpubkeyman.cpp#L1392[LearnRelatedScripts]` makes the wallet learn the related scripts for outputs to the given key. This is purely to make the wallet file compatible with older software.
+
+`https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/outputtype.cpp#L49[GetDestinationForKey]`  gets a destination (address) of the requested type (if possible) to the specified key. Examples of types are `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/script/standard.h#L142[PKHash]`, `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/script/standard.h#L172[WitnessV0KeyHash] (Segwit)` or `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/script/standard.h#L152[ScriptHash]`.
+
+[source,c++]  
+---- 
+CTxDestination GetDestinationForKey(const CPubKey& key, OutputType type)
+{
+    switch (type) {
+    case OutputType::LEGACY: return PKHash(key);
+    case OutputType::P2SH_SEGWIT:
+    case OutputType::BECH32: {
+        if (!key.IsCompressed()) return PKHash(key);
+        CTxDestination witdest = WitnessV0KeyHash(key);
+        CScript witprog = GetScriptForDestination(witdest);
+        if (type == OutputType::P2SH_SEGWIT) {
+            return ScriptHash(witprog);
+        } else {
+            return witdest;
+        }
+    }
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+---- 
 
 The destination (address) is stored in a variable called `dest` and it finishes the legacy wallet workflow.
 
