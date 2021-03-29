@@ -1,5 +1,5 @@
 _1) How does CDataStream know the kind of serialization to carry out?_ +
-CDataStream does not. To serialize an arbitrary class, the macro IMPLEMENT_SERIALIZE for each class and READWRITE for each member variables.
+CDataStream does not. To serialize an arbitrary class, the macro IMPLEMENT_SERIALIZE should be implemented for the class and READWRITE for each member variables.
 
 For example:
 [source,c++]  
