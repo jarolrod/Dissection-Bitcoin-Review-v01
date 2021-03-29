@@ -1,0 +1,34 @@
+_1) How does CDataStream know the kind of serialization to carry out?_ +
+CDataStream does not. To serialize an arbitrary class, the macro IMPLEMENT_SERIALIZE for each class and READWRITE for each member variables.
+
+For example:
+[source,c++]  
+----
+class CTxIn
+{
+public:
+    COutPoint prevout;
+    CScript scriptSig;
+    unsigned int nSequence;
+    
+   // ...
+   IMPLEMENT_SERIALIZE
+    (
+        READWRITE(prevout);
+        READWRITE(scriptSig);
+        READWRITE(nSequence);
+    )
+    
+    // ...
+}
+----
+
+The operator `<<` and `<<` of CDataStream calls global function `::Serialize` and `::Unserialize` respectively.
+Header file serialize.h contains 14 overloaded versions of these two global functions for 14 primitive types (`signed` and `unsigned` versions of `char`, `short`, `int`, `long` and `long long`, plus `char`, `float`, `double` and `bool`) and 6 overloaded versions for 6 composite types (`string`, `vector`, `pair`, `map`, `set` and `CScript`).
+There's also a global function with a generic type T, that is used to custom implementation.
+
+If the type of x is any one of the 20 types (14 primitive and 6 composite) for which the corresponding global serialization functions have been implemented, these functions will be called. Otherwise, if x is an instance of some class, then a generic version of the overloaded global serialization function is called, which in turn calls the serialization function `x.Serilaize()` for object x. This member function presumably is implemented using macro `IMPLEMENT_SERIALIZE(READWRTIE(...);)` as well, and the calling chain recursively goes down until hits one of the 20 implemented types.
+
+_2) Serialization is obviously an important part of transferring messages across the wire to peers, but why would satoshi have to write this from scratch as opposed to using a C++ library, that undoubtedly must have solved this problem?_
+
+Not sure, but it can be related to efficiency. If it had used a C++ library, probably the serialization functions would been resolved at runtime. The way it was done, they are resolved at compiling time, making the code very efficient.
