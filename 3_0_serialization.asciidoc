@@ -1,0 +1,39 @@
+[[bitcoin-transaction]]
+== 3.0. Serialization
+
+One of the first difference that can be noticed between the current code and the book code is the `vector_type vch` variable.
+
+In the code analyzed by the book, `vector_type` is a `vector<char>` with a customized allocator (called `secure_allocator`). This customized allocator clears the memory content before releasing the memory to the OS to prevent other processes running in the same machine to read the data. This ensures the security of the data it stores.
+
+In the https://github.com/bitcoin/bitcoin/pull/352[PR 352], the behaviour of locking the content of vector from being paged out of memory was added. `mlock()` lock part of the calling process's virtual address space into RAM, preventing that memory from being paged to the swap area. `munlock()` perform the converse operation,  unlocking part of the calling process's virtual address space, so that pages in the specified virtual address range may once more to be swapped out if required by the kernel memory manager.
+
+[source,c++]  
+----
+template<typename T>
+struct secure_allocator : public std::allocator<T>
+{
+    // ...
+    T* allocate(std::size_t n, const void *hint = 0)
+    {
+        T *p;
+        p = std::allocator<T>::allocate(n, hint);
+        if (p != NULL)
+            mlock(p, sizeof(T) * n);
+        return p;
+    }
+
+    void deallocate(T* p, std::size_t n)
+    {
+        if (p != NULL)
+        {
+            memset(p, 0, sizeof(T) * n);
+            munlock(p, sizeof(T) * n);
+        }
+        std::allocator<T>::deallocate(p, n);
+    }
+};
+----
+
+However, this behavior has been removed in the https://github.com/bitcoin/bitcoin/pull/740[PR 740] due to perfomance issues. Since CDataStream has a wide usage, the use of the `mlock` in `secure_allocator` increased blockchain download by estimate of 40-50x.
+
+The `secure_allocator` name was replaced by `zero_after_free_allocator` and with the `mlock` removal, te code is almost the same as before. This name reflects better the original proposal of this struct of clearing the content before releasing the memory, that is done with the command `memset(p, 0, sizeof(T) * n)` in the `deallocate` function.
