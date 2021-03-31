@@ -228,6 +228,11 @@ struct ScriptHash : public BaseHash<uint160>
 `CChainParams` defines various tweakable parameters of a given instance of the Bitcoin system, such as `powLimit`, `nSubsidyHalvingInterval`, `nPowTargetTimespan`, `checkpointData` and the DNS Seeds. + 
 There are four `CChainParams`: the main network (`class CMainParams`), public test network (`class CTestNetParams`), regression test mode (`CRegTestParams`) and the new test network called Signet which adds an additional signature requirement to block validation (class `SigNetParams`).
 
+.CChainParams and its subclasses
+image::images/chapter_2_2/CChainParams.svg[CChainParams, align="center"]
+
+{empty} +
+
 [source,c++]  
 ----
 class CMainParams : public CChainParams {

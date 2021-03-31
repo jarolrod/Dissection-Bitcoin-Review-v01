@@ -5,7 +5,7 @@ One of the first difference that can be noticed between the current code and the
 
 In the code analyzed by the book, `vector_type` is a `vector<char>` with a customized allocator (called `secure_allocator`). This customized allocator clears the memory content before releasing the memory to the OS to prevent other processes running in the same machine to read the data. This ensures the security of the data it stores.
 
-In the https://github.com/bitcoin/bitcoin/pull/352[PR 352], the behaviour of locking the content of vector from being paged out of memory was added. `mlock()` lock part of the calling process's virtual address space into RAM, preventing that memory from being paged to the swap area. `munlock()` perform the converse operation,  unlocking part of the calling process's virtual address space, so that pages in the specified virtual address range may once more to be swapped out if required by the kernel memory manager.
+In the https://github.com/bitcoin/bitcoin/pull/352[PR #352], the behaviour of locking the content of vector from being paged out of memory was added. `mlock()` lock part of the calling process's virtual address space into RAM, preventing that memory from being paged to the swap area. `munlock()` perform the converse operation,  unlocking part of the calling process's virtual address space, so that pages in the specified virtual address range may once more to be swapped out if required by the kernel memory manager.
 
 [source,c++]  
 ----
@@ -34,6 +34,88 @@ struct secure_allocator : public std::allocator<T>
 };
 ----
 
-However, this behavior has been removed in the https://github.com/bitcoin/bitcoin/pull/740[PR 740] due to perfomance issues. Since CDataStream has a wide usage, the use of the `mlock` in `secure_allocator` increased blockchain download by estimate of 40-50x.
+However, this behavior has been removed in the https://github.com/bitcoin/bitcoin/pull/740[PR #740] due to perfomance issues. Since `CDataStream` has a wide usage, the use of the `mlock` in `secure_allocator` increased blockchain download by estimate of 40-50x.
 
 The `secure_allocator` name was replaced by `zero_after_free_allocator` and with the `mlock` removal, te code is almost the same as before. This name reflects better the original proposal of this struct of clearing the content before releasing the memory, that is done with the command `memset(p, 0, sizeof(T) * n)` in the `deallocate` function.
+
+In the https://github.com/bitcoin/bitcoin/pull/2409[PR #2409], the `std::vector<char, zero_after_free_allocator<char> >` was defined as `CSerializeData`, so that it could be reused in `net.h` for network optimalizations. This change have had no effect in the serialization behavior.
+
+[source,c++]  
+----
+typedef std::vector<char, zero_after_free_allocator<char> > CSerializeData;
+
+class CDataStream
+{
+protected:
+    // ...
+    typedef CSerializeData vector_type;
+    // ...
+}
+----
+
+The original Satoshi's implementation depended on little-endianness. As the serialization was implemented through simple memory copying, there was no way it would work on other endiannesses. On a platform on which these were different from x86, the serialized format would be incompatible.
+
+The https://github.com/bitcoin/bitcoin/pull/5510[PR #5510] implemented big endian support, so thenceforth the Bitcoin Core has worked on both endiannesses. The `READDATA` and `WRITEDATA` directives https://github.com/bitcoin/bitcoin/pull/5510/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0L116-L117[was replaced] with https://github.com/bitcoin/bitcoin/pull/5510/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0R80[functions] that take sized integer types to make use of the proper `https://github.com/bitcoin/bitcoin/pull/5510/files#diff-31f4e9f7c3ca0a1b6ab8e4675b560071f9174c4b017cb3a9db98f78681178595[endian.h]` functions. This replacement also made the code more readable and maintainable.
+
+// Detail more about src/compat/endian.h and src/compat/byteswap.h
+
+The https://github.com/bitcoin/bitcoin/pull/6914[PR #6914] has created a new basic data type called `https://github.com/bitcoin/bitcoin/pull/6914/files#diff-de4950d13265ca967d41d1ea4fed9fe97947f6aa940eb58878b024689bd4de4e[prevector<N, T>]` which is a fully API compatible drop-in replacement for `std::vector<T>`, which typically allocates memory on the heap and often ends up occupying more space than a builtin array, as memory can be allocated to handle future growth. The `prevector` receives an `unsigned int N` parameter and uses it stores up to `N` elements directly, without heap allocation. In the `https://github.com/bitcoin/bitcoin/pull/6914/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0[serialize.h]` file, CScript https://github.com/bitcoin/bitcoin/pull/6914/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0L23-R23[has been switched] to use this new type, reducing the memory consumption of mempool and chainstate and new functions have been implemented to handle this data structure. However the 
+`typedef std::vector<char, zero_after_free_allocator<char> > CSerializeData;` has not changed, since the `prevector` has not supported custom allocators.
+
+// PR #8068 Compact Blocks - implements the BIP 152
+// Add COMPACTSIZE wrapper similar to VARINT for serialization 
+
+// https://github.com/bitcoin/bitcoin/pull/9039
+
+=== Transactions
+
+//Review
+In the early version of Bitcoin (like v0.11), serializing transactions was much simpler. +
+In the serialize.h, there was a macro `ADD_SERIALIZE_METHODS` that implemented three methods for serializable objects: `GetSerializeSize()`, `Serialize()` and `Unserialize()`. And they called the method `SerializationOp()`, which were implemented in each serializable class and handle the specific serialization code for that class. So this way, appending "ADD_SERIALIZE_METHODS" in the body of the class caused these three methods to be added as members.
+
+[source,c++]  
+----
+#define READWRITE(obj)      (::SerReadWrite(s, (obj), nType, nVersion, ser_action))
+
+#define ADD_SERIALIZE_METHODS                                                          \
+    size_t GetSerializeSize(int nType, int nVersion) const {                         \
+        CSizeComputer s(nType, nVersion);                                            \
+        NCONST_PTR(this)->SerializationOp(s, CSerActionSerialize(), nType, nVersion);\
+        return s.size();                                                             \
+    }                                                                                \
+    template<typename Stream>                                                        \
+    void Serialize(Stream& s, int nType, int nVersion) const {                       \
+        NCONST_PTR(this)->SerializationOp(s, CSerActionSerialize(), nType, nVersion);\
+    }                                                                                \
+    template<typename Stream>                                                        \
+    void Unserialize(Stream& s, int nType, int nVersion) {                           \
+        SerializationOp(s, CSerActionUnserialize(), nType, nVersion);                \
+    }
+
+// ...
+
+template<typename Stream, typename T>
+inline void SerReadWrite(Stream& s, const T& obj, int nType, int nVersion, CSerActionSerialize ser_action)
+{
+    ::Serialize(s, obj, nType, nVersion);
+}
+
+template<typename Stream, typename T>
+inline void SerReadWrite(Stream& s, T& obj, int nType, int nVersion, CSerActionUnserialize ser_action)
+{
+    ::Unserialize(s, obj, nType, nVersion);
+}
+----
+
+Other relevant macro is the `READWRITE(obj)` that also can be seen above, that is basically a wrapper to `SerReadWrite(...)` and then `::Serialize(...);`.This last function is overloaded for every basic types (`signed` and `unsigned` versions of `char`, `short`, `int`, `long` and `long long`, plus `char`, `float`, `double` and `bool`) and also there were 6 overloaded versions for 6 composite types (`string`, `vector`, `pair`, `map`, `set` and `CScript`). This macro was usually used inside `SerializationOp(...)` to implement the serialization code.
+
+As an example of using the `READWRITE(obj)`, let's see how the Transaction class implemented serialization.
+
+The class CTransaction represents basic transaction that is broadcasted on the network and contained in blocks. The class is composed by five members: `uint256 hash`, `int32_t nVersion`, `std::vector<CTxIn> vin`, `std::vector<CTxOut> vout` and `uint32_t nLockTime`. +
+The class `CTxOut` represents an output of a transaction. It contains the public key that the next input must be able to sign with to claim it. The fields are `CAmount nValue` and `CScript scriptPubKey`. +
+The class `CTxIn` defines an input of a transaction.  It contains the location of the previous transaction's output that it claims and a signature that matches the output's public key. The members are `COutPoint prevout`, `CScript scriptSig` and `uint32_t nSequence`. +
+The class `COutPoint` refers to an outpoint - a combination of a transaction hash and an index n into its vout. The fields are `uint256 hash` and `uint32_t n`. +
+With some minor additions that we will see later, this data structure for transactions is still basically the same in the current version, v0.21. The diagram below describes it visually. 
+
+.Transaction classes
+image::images/chapter_3_0/transaction_classes_v0_11.svg[TxClasses, align="center"]
