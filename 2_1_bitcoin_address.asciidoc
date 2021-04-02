@@ -87,7 +87,7 @@ Pay to script hash (P2SH) address format were standardised in https://github.com
     base58-encode: RIPEMD160(SHA256(redeemScript))
 
 .Why base-58 instead of standard base-64 encoding?
-[TIP]
+[NOTE]
 ===============================
 * Don't want 0OIl characters that look the same in some fonts and could be used to create visually identical looking data.
 * A string with non-alphanumeric characters is not as easily accepted as input. + 
@@ -105,7 +105,7 @@ Both `P2PKH` and `P2WPKH` have 160-bit hashes and since only a single key is inv
 More details about this interesting question can be found in the _u/maaku7's_ https://www.reddit.com/r/Bitcoin/comments/74tonn/bech32_native_segwit_address_already_used_on_the/dqlogru/[informative answer]  in Reddit. 
 
 .Why Bech32 instead of standard base-58 encoding?
-[TIP]
+[NOTE]
 ===============================
 * Base58 needs a lot of space in QR codes, as it cannot use the alphanumeric mode.
 * The mixed case in base58 makes it inconvenient to reliably write down, type on mobile keyboards, or read out loud.

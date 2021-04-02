@@ -50,7 +50,7 @@ The OpenSSL depency for SHA256 has been removed in the https://github.com/bitcoi
 However, the OpenSSL dependency has only been completely removed recently, in the version https://bitcoin.org/en/release/v0.20.0#build-system[v0.20.0], with the https://github.com/bitcoin/bitcoin/pull/17265[PR #17265].
 
 .Why remove the OpenSSL dependency? 
-[TIP]
+[NOTE]
 ===============================
 Using third-party libraries reduces the amount of work to be allocated in software development and allows the reuse of well-tested code instead of reinventing the wheel. +
 However, this comes at a cost. Third party components may contain vulnerabilities and may not adopt good security practices in the development. In order to minimize this risk, Bitcoin Core tries to minimize any dependencies as much as possible.
@@ -76,15 +76,20 @@ protected:
 
 === CSizeComputer
 
-Another class widely used in Bitcoin Core serialization processes is `CSizeComputer`. It was introduced in the https://github.com/bitcoin/bitcoin/pull/4508[PR #4508] in `https://github.com/bitcoin/bitcoin/pull/4508/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0[serialize.h]`. It is a minimal serializer stream implementation that only computes the number of bytes written. It is as efficient as the original function `GetSerializeSize(...)` . This new class was implemented to avoid duplicating the deserialization code when not using the `IMPLEMENT_SERIALIZE` macro. In this particular PR, for example, the `IMPLEMENT_SERIALIZE` https://github.com/bitcoin/bitcoin/pull/4508/files#diff-164bd9e2e30f54d0a79eb7cc372309e2f2155edc6c3f051290ab078f03f6a771L249[has been removed] from `CAddrMan`  because the serialization and deserialization code had very little in common.
+Another class widely used in Bitcoin Core serialization processes is `CSizeComputer`. It was introduced in the https://github.com/bitcoin/bitcoin/pull/4508[PR #4508] in `https://github.com/bitcoin/bitcoin/pull/4508/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0[serialize.h]`. It is a minimal serializer stream implementation that only computes the number of bytes written. It is as efficient as the original function `GetSerializeSize(...)` . This new class was implemented to avoid duplicating the deserialization code when not using the `IMPLEMENT_SERIALIZE` macro. In this particular PR, for example, the `IMPLEMENT_SERIALIZE` https://github.com/bitcoin/bitcoin/pull/4508/files#diff-164bd9e2e30f54d0a79eb7cc372309e2f2155edc6c3f051290ab078f03f6a771L249[has been removed] from `CAddrMan`  because the serialization and deserialization code had very little in common. 
+
+The https://github.com/bitcoin/bitcoin/pull/9039/commits/657e05ab2e87ff725723fe8a375fc3f8aad02126[commit 657e05a] of the https://github.com/bitcoin/bitcoin/pull/9039[PR #9039] has gotten rid
+of the specialized `GetSerializeSize` methods in the code, and has started to use the `GetSerializeSize` of the `serialize.h` as a wrapper on top of `CSizeComputer`. It is worth taking a look at this PR, as it implemented several serialization simplifications and optimizations. 
 
 === Big endian support
 
-The original Satoshi's implementation depended on little-endianness. As the serialization was implemented through simple memory copying, there was no way it would work on other endiannesses. On a platform on which these were different from x86, the serialized format would be incompatible.
+The original Satoshi's implementation depended on little-endianness. As the serialization was implemented through simple memory copying, there was no way it would work on other endiannesses. The binary format handled by `serialize.h` depended on the in-memory sizes of char, int, long, ... On a platform on which these were different from x86, the serialized format would be incompatible.
 
 The https://github.com/bitcoin/bitcoin/pull/5510[PR #5510] implemented big endian support, so thenceforth the Bitcoin Core has worked on both endiannesses. The `READDATA` and `WRITEDATA` directives https://github.com/bitcoin/bitcoin/pull/5510/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0L116-L117[was replaced] with https://github.com/bitcoin/bitcoin/pull/5510/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0R80[functions] that take sized integer types to make use of the proper `https://github.com/bitcoin/bitcoin/pull/5510/files#diff-31f4e9f7c3ca0a1b6ab8e4675b560071f9174c4b017cb3a9db98f78681178595[endian.h]` functions. This replacement also made the code more readable and maintainable.
 
 // Detail more about src/compat/endian.h and src/compat/byteswap.h
+
+=== prevector
 
 The https://github.com/bitcoin/bitcoin/pull/6914[PR #6914] has created a new basic data type called `https://github.com/bitcoin/bitcoin/pull/6914/files#diff-de4950d13265ca967d41d1ea4fed9fe97947f6aa940eb58878b024689bd4de4e[prevector<N, T>]` which is a fully API compatible drop-in replacement for `std::vector<T>`, which typically allocates memory on the heap and often ends up occupying more space than a builtin array, as memory can be allocated to handle future growth. The `prevector` receives an `unsigned int N` parameter and uses it stores up to `N` elements directly, without heap allocation. In the `https://github.com/bitcoin/bitcoin/pull/6914/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0[serialize.h]` file, CScript https://github.com/bitcoin/bitcoin/pull/6914/files#diff-1c0f9772bbdf8bfc283393a67c305b997a8ab9738d48c160e07d2fa56500a7a0L23-R23[has been switched] to use this new type, reducing the memory consumption of mempool and chainstate and new functions have been implemented to handle this data structure. However the 
 `typedef std::vector<char, zero_after_free_allocator<char> > CSerializeData;` has not changed, since the `prevector` has not supported custom allocators.
@@ -192,4 +197,116 @@ Other transaction classes followed this scheme. One notable exception that has n
 
 === Transactions Serialization - Current Implementation
 
-The current serialization format is defined in BIP 144. 
+The current serialization format for transactions is defined in https://github.com/bitcoin/bips/blob/master/bip-0144.mediawiki[BIP 144] and it should be backwards compatibility with nodes that is not able to distinguish between the old serialization format (without the witness) and current one.
+
+The table below (from the PR) describes the serialization structure for a segwit transaction and will make it easier to understand the code.
+
+[%autowidth]
+|===
+|Field Size (byte) |Name| Type| Description
+
+|4
+|version
+|int32_t
+|Transaction data format version
+
+|1
+|marker
+|char
+|Must be zero
+
+|1 
+|flag
+|char
+|Must be nonzero
+
+|1+
+|txin_count
+|var_int
+|Number of transaction inputs
+
+|41+
+|txins
+|txin[]
+|A list of one or more transaction inputs 
+
+|1+
+|txout_count
+|var_int
+|Number of transaction outputs
+
+|9+ 
+|txouts
+|txouts[]
+|A list of one or more transaction outputs 
+
+|1+ 
+|script_witnesses
+|script_witnesses[]
+|The witness structure as a serialized byte array
+
+|4  
+|lock_time
+|uint32_t
+|The block number or timestamp until which the transaction is locked
+|===
+
+If the transaction is not segwit the fiedls `marker`, `flag` and `script_witnesses` will not be considered in serialization. In this, if the fifth byte is not a Segwit marker (`x00`), it can be identified as an legacy transaction. 
+
+The method `SerializeTransaction(...)` in `src/primitives/transactions.h` implements the BIP 144 specification. 
+
+[source,c++,linenums]  
+----
+template<typename Stream, typename TxType>
+inline void SerializeTransaction(const TxType& tx, Stream& s) {
+    const bool fAllowWitness = !(s.GetVersion() & SERIALIZE_TRANSACTION_NO_WITNESS);
+
+    s << tx.nVersion;
+    unsigned char flags = 0;
+    // Consistency check
+    if (fAllowWitness) {
+        /* Check whether witnesses need to be serialized. */
+        if (tx.HasWitness()) {
+            flags |= 1;
+        }
+    }
+    if (flags) {
+        /* Use extended format in case witnesses are to be serialized. */
+        std::vector<CTxIn> vinDummy;
+        s << vinDummy;
+        s << flags;
+    }
+    s << tx.vin;
+    s << tx.vout;
+    if (flags & 1) {
+        for (size_t i = 0; i < tx.vin.size(); i++) {
+            s << tx.vin[i].scriptWitness.stack;
+        }
+    }
+    s << tx.nLockTime;
+}
+----
+
+The first line `fAllowWitness` checks if witnesses need to be serialized.  `SERIALIZE_TRANSACTION_NO_WITNESS` is a flag that is combined with the protocol version to designate that a transaction should be serialized without witness data. Only if `fAllowWitness` is true, witness data will be serialized. There is a section to detail this flag better.
+
+The next line serialize the `nVersion`, that is member of CTransaction or CMutableTransaction. This field is a 32-bits fixed-size type `int32_t`. So when serialized, it will be the first 4 bytes of the stream as defined in the BIP 144 table first line.
+
+In the next 8 lines, `flags` is set as 0. If `fAllowWitness` is true and the transaction has witness data (`tx.HasWitness()`), the flag is changed to 1. As specified in the third line of the table, the flag field must be nonzero for segwit transaction. Note that this field is a char type  and therefore 1 byte will be written in the stream.
+
+The next line `if (flags) {` checks if flag is true (`not 0`). If so,  this is a segwit transaction, and the `marker` and `flag` must be added. `vinDummy` represents the `marker` field and it is an empty vector (size 0), so `s << vinDummy` adds 1 byte with value `0` to the stream. `s << flags`adds 1 byte with value `1`.
+
+The next steps `s << tx.vin;` and `s << tx.vout;` serialize the two `std::vector`of one or more transaction inputs and outputs. Although it is not evident in the code, the size of each vector is serialzied before them, as described in the table. It is done in the function `void Ser(...)` of the `struct VectorFormatter` that calls `WriteCompactSize(s, v.size());`, which handles the vector size serialization. This call stack will be better analyzed in the `CTxIn` and `CTxOut` serialization.
+
+The next step `if (flags & 1) {` serialize the witness data if the transaction is segwit enabled. Note that the number of script witnesses is not explicitly encoded in the stream as it is the same of `tx.vin.size()`. The `tx.vin[i].scriptWitness.stack` is just a `std::vector<std::vector<unsigned char> >` and the default `vector` and `unsigned char` of `serialize.h` will be used.
+
+And finally, the last command `s << tx.nLockTime` serializes the `nLockTime` which also is a 32-bits fixed-size type `int32_t` (or 4 bytes).
+
+// Calculate the size of tx
+// Set the links above
+
+=== SERIALIZE_TRANSACTION_NO_WITNESS Flag
+
+// https://github.com/bitcoin/bitcoin/issues/19477
+// https://github.com/bitcoin/bitcoin/pull/19503
+
+=== VectorFormatter
