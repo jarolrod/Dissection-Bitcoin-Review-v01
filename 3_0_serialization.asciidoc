@@ -81,6 +81,7 @@ Another class widely used in Bitcoin Core serialization processes is `CSizeCompu
 The https://github.com/bitcoin/bitcoin/pull/9039/commits/657e05ab2e87ff725723fe8a375fc3f8aad02126[commit 657e05a] of the https://github.com/bitcoin/bitcoin/pull/9039[PR #9039] has gotten rid
 of the specialized `GetSerializeSize` methods in the code, and has started to use the `GetSerializeSize` of the `serialize.h` as a wrapper on top of `CSizeComputer`. It is worth taking a look at this PR, as it implemented several serialization simplifications and optimizations. 
 
+[[big-endian-support]]
 === Big endian support
 
 The original Satoshi's implementation depended on little-endianness. As the serialization was implemented through simple memory copying, there was no way it would work on other endiannesses. The binary format handled by `serialize.h` depended on the in-memory sizes of char, int, long, ... On a platform on which these were different from x86, the serialized format would be incompatible.
@@ -251,11 +252,116 @@ The table below (from the PR) describes the serialization structure for a segwit
 |The block number or timestamp until which the transaction is locked
 |===
 
-If the transaction is not segwit the fiedls `marker`, `flag` and `script_witnesses` will not be considered in serialization. In this, if the fifth byte is not a Segwit marker (`x00`), it can be identified as an legacy transaction. 
+If the transaction is not segwit the fiedls `marker`, `flag` and `script_witnesses` will not be considered in serialization. In this, if the fifth byte is not a Segwit marker (`x00`), it can be identified as an legacy transaction.
 
-The method `SerializeTransaction(...)` in `src/primitives/transactions.h` implements the BIP 144 specification. 
+=== VarInt
 
-[source,c++,linenums]  
+The fields `txin_count` and `txout_count` are var_int type and this type is widely used in several serialization process. Varint is a shorthand for _variable integer_, which is a way to encode an integer into bytes that range from 0 to 2^64^.
+
+The number of inputs or outputs in a transaction is not fixed. It can have as many of them as it is necessary. If a fixed single byte was used to represent this number, only 255 inputs or outputs would be possible. If the field was fixed 8 bytes, a lot of space would be wasted when this number is small.
+
+If a field does not have a fixed length, it is necessary to add another field before this one, indicating the size of the data, so when the data is deserialized, the reader will know where that field begins and where it ends. Therefore, a _VarInt_ field is a clever way to represent the size of the next one, allowing space savings.
+
+The functions that implement writing and reading variable-length integer are `void WriteCompactSize(...)` and `uint64_t ReadCompactSize(....)` in `src/serialize.h`
+
+[source,c++]  
+----
+template<typename Stream>
+void WriteCompactSize(Stream& os, uint64_t nSize)
+{
+    if (nSize < 253)
+    {
+        ser_writedata8(os, nSize);
+    }
+    else if (nSize <= std::numeric_limits<uint16_t>::max())
+    {
+        ser_writedata8(os, 253);
+        ser_writedata16(os, nSize);
+    }
+    else if (nSize <= std::numeric_limits<unsigned int>::max())
+    {
+        ser_writedata8(os, 254);
+        ser_writedata32(os, nSize);
+    }
+    else
+    {
+        ser_writedata8(os, 255);
+        ser_writedata64(os, nSize);
+    }
+    return;
+}
+----
+
+In the line 4 `if (nSize < 253)`, if the size of the data (`nSize`) is below 253, then the size is encoded as a single byte.
+
+If the size is equal or less than 16-bits (2 bytes) `else if (nSize <= std::numeric_limits<uint16_t>::max())`, the value 253 (0xfd) is written in the first byte slot and size is encoded in 2 bytes in little endian format.
+
+If the size is equal or less than 32-bits (4 bytes) `else if (nSize <= std::numeric_limits<unsigned int>::max())`, the value 254 (0xfe) is written in the first byte slot and size is encoded in 4 bytes in little endian format.
+
+And finally, if the size is greater than 32-bits (4 bytes), the value 255 (0xff) is written in the first byte slot and size is encoded in 8 bytes (64 bits) in little endian format.
+
+In short, if the value of the first byte is less than 253, it will represent the actual size. Otherwise, this first byte will be used to indicate how the size is to be read. The value 253 indicates that the next 2 bytes must be read to obtain the actual size. 254, the next 4 bytes and 255, the next 8 bytes.
+
+Why is the size converted to little endian ?
+[NOTE]
+===============================
+As said in <<big-endian-support>> section, the https://github.com/bitcoin/bitcoin/pull/5510[PR 5510] implemented the endianness neutrality. So the system handles manually the endian issues instead of relying on CPU endianness. The functions `ser_writedata16(...)`, `ser_writedata32(...)` and `ser_writedata64(...)` respectively call `htole16()`, `htole32()``, and `htole64()` functions that return an integer in the system's native byte order converted to little endian byte order. The return value will be the same as the argument on little endian systems.
+===============================
+
+The function `uint64_t ReadCompactSize(....)` does the opposite operation: it reads the first byte and then take the appropriate action according to this value.
+
+[source,c++]  
+----
+template<typename Stream>
+uint64_t ReadCompactSize(Stream& is, bool range_check = true)
+{
+    uint8_t chSize = ser_readdata8(is);
+    uint64_t nSizeRet = 0;
+    if (chSize < 253)
+    {
+        nSizeRet = chSize;
+    }
+    else if (chSize == 253)
+    {
+        nSizeRet = ser_readdata16(is);
+        if (nSizeRet < 253)
+            throw std::ios_base::failure("non-canonical ReadCompactSize()");
+    }
+    else if (chSize == 254)
+    {
+        nSizeRet = ser_readdata32(is);
+        if (nSizeRet < 0x10000u)
+            throw std::ios_base::failure("non-canonical ReadCompactSize()");
+    }
+    else
+    {
+        nSizeRet = ser_readdata64(is);
+        if (nSizeRet < 0x100000000ULL)
+            throw std::ios_base::failure("non-canonical ReadCompactSize()");
+    }
+    if (range_check && nSizeRet > MAX_SIZE) {
+        throw std::ios_base::failure("ReadCompactSize(): size too large");
+    }
+    return nSizeRet;
+}
+----
+
+In the first line, the first byte is read `uint8_t chSize = ser_readdata8(is);` and stored in the `chSize` variable.
+
+If the `chSize` value is less than 253, then it is the actual size and there is no need to read the next bytes. This value is set to `nSizeRet` that will be the function return.
+
+If the `chSize` is equal to 253, the next 2 bytes will be read to get the actual size. If the number read is less than 253, Something went wrong because this number should be in the first byte.
+
+The same logic is applied to next checks. If `chSize` indicates the next 4 bytes should read but a 2 bytes value is found, so the exception will be throw. The same applies for 8 bytes.
+
+And finally, it is checked if `nSizeRet` is greater than MAX_SIZE, which is the maximum allowed size of a serialized object in bytes in or number of elements when the size is encoded as CompactSize.
+
+
+=== SerializeTransaction(...)
+
+The method `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/primitives/transaction.h#L227[SerializeTransaction(...)]` in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/primitives/transaction.h[src/primitives/transactions.h]` implements the BIP 144 specification. 
+
+[source,c++]  
 ----
 template<typename Stream, typename TxType>
 inline void SerializeTransaction(const TxType& tx, Stream& s) {
@@ -287,22 +393,84 @@ inline void SerializeTransaction(const TxType& tx, Stream& s) {
 }
 ----
 
-The first line `fAllowWitness` checks if witnesses need to be serialized.  `SERIALIZE_TRANSACTION_NO_WITNESS` is a flag that is combined with the protocol version to designate that a transaction should be serialized without witness data. Only if `fAllowWitness` is true, witness data will be serialized. There is a section to detail this flag better.
+// TODO: template<typename Stream, typename TxType>
+// TODO: nVersion, nLockTime
 
-The next line serialize the `nVersion`, that is member of CTransaction or CMutableTransaction. This field is a 32-bits fixed-size type `int32_t`. So when serialized, it will be the first 4 bytes of the stream as defined in the BIP 144 table first line.
+In the first line of the code, `fAllowWitness` checks if witnesses need to be serialized.  `SERIALIZE_TRANSACTION_NO_WITNESS` is a flag that is combined with the protocol version to designate that a transaction should be serialized without witness data. Only if `fAllowWitness` is true, witness data will be serialized. There is a section to detail this flag better.
 
-In the next 8 lines, `flags` is set as 0. If `fAllowWitness` is true and the transaction has witness data (`tx.HasWitness()`), the flag is changed to 1. As specified in the third line of the table, the flag field must be nonzero for segwit transaction. Note that this field is a char type  and therefore 1 byte will be written in the stream.
+The next line serialize the `nVersion`, that is member of CTransaction or CMutableTransaction. This field is a 32-bits fixed-size type `int32_t`. So when serialized, it will be the first 4 bytes of the stream as defined in the first row of the BIP 144 table.
 
-The next line `if (flags) {` checks if flag is true (`not 0`). If so,  this is a segwit transaction, and the `marker` and `flag` must be added. `vinDummy` represents the `marker` field and it is an empty vector (size 0), so `s << vinDummy` adds 1 byte with value `0` to the stream. `s << flags`adds 1 byte with value `1`.
+In the next 8 lines, `flags` is set as 0. If `fAllowWitness` is true and the transaction has witness data (`tx.HasWitness()`), the flag is changed to 1. As specified in the third row of the table, the flag field must be nonzero for segwit transaction. Note that this field is a char type  and therefore 1 byte will be written in the stream.
 
-The next steps `s << tx.vin;` and `s << tx.vout;` serialize the two `std::vector`of one or more transaction inputs and outputs. Although it is not evident in the code, the size of each vector is serialzied before them, as described in the table. It is done in the function `void Ser(...)` of the `struct VectorFormatter` that calls `WriteCompactSize(s, v.size());`, which handles the vector size serialization. This call stack will be better analyzed in the `CTxIn` and `CTxOut` serialization.
+The next line `if (flags) {` checks if flag is true (`not 0`). If so,  this is a segwit transaction, and the `marker` and `flag` must be added. `vinDummy` represents the `marker` field of the table and it is an empty vector (size 0), so `s << vinDummy` adds 1 byte with value `0` to the stream. `s << flags` adds 1 byte with value `1`.
 
-The next step `if (flags & 1) {` serialize the witness data if the transaction is segwit enabled. Note that the number of script witnesses is not explicitly encoded in the stream as it is the same of `tx.vin.size()`. The `tx.vin[i].scriptWitness.stack` is just a `std::vector<std::vector<unsigned char> >` and the default `vector` and `unsigned char` of `serialize.h` will be used.
+The next steps `s << tx.vin;` and `s << tx.vout;` serialize the two `std::vector` of one or more transaction inputs and outputs. Although it is not evident in the code, the size of each vector is serialzied before them, as described in the fourth and sixth row of the table. It is done in the function `void Ser(...)` of the `struct VectorFormatter` that calls `WriteCompactSize(s, v.size());`, which handles the vector size serialization. This call stack will be better analyzed in the `CTxIn` and `CTxOut` serialization. +
+This also explains why the serialization of the empty vector `vinDummy` mentioned above results in 0. What is being added to the stream is the size of the vector (that is 0) and then there is nothing more to add.
+
+The next step `if (flags & 1) {` serialize the witness data if the transaction is segwit enabled. Note that the number of script witnesses is not explicitly encoded in the stream as it is the same of `txin_count`. The `tx.vin[i].scriptWitness.stack` is just a `std::vector<std::vector<unsigned char>>` type, it is defined in the file `src/script/script.h` and the default `vector` and `unsigned char` serializers of `serialize.h` will be used. +
+According to the BIP, "_currently, the only witness objects type supported are script witnesses which consist of a stack of byte arrays. It is encoded as a var_int item count followed by each item encoded as a _var_int_ length followed by a string of bytes_". In other words, `script_witness` is a variable length field and therefore, in order to know how long the field is, it is preceded by a _varint_ indicating its size. 
 
 And finally, the last command `s << tx.nLockTime` serializes the `nLockTime` which also is a 32-bits fixed-size type `int32_t` (or 4 bytes).
 
 // Calculate the size of tx
 // Set the links above
+
+=== UnserializeTransaction(...)
+
+[source,c++]  
+----
+template<typename Stream, typename TxType>
+inline void UnserializeTransaction(TxType& tx, Stream& s) {
+    const bool fAllowWitness = !(s.GetVersion() & SERIALIZE_TRANSACTION_NO_WITNESS);
+
+    s >> tx.nVersion;
+    unsigned char flags = 0;
+    tx.vin.clear();
+    tx.vout.clear();
+    /* Try to read the vin. In case the dummy is there, this will be read as an empty vector. */
+    s >> tx.vin;
+    if (tx.vin.size() == 0 && fAllowWitness) {
+        /* We read a dummy or an empty vin. */
+        s >> flags;
+        if (flags != 0) {
+            s >> tx.vin;
+            s >> tx.vout;
+        }
+    } else {
+        /* We read a non-empty vin. Assume a normal vout follows. */
+        s >> tx.vout;
+    }
+    if ((flags & 1) && fAllowWitness) {
+        /* The witness flag is present, and we support witnesses. */
+        flags ^= 1;
+        for (size_t i = 0; i < tx.vin.size(); i++) {
+            s >> tx.vin[i].scriptWitness.stack;
+        }
+        if (!tx.HasWitness()) {
+            /* It's illegal to encode witnesses when all witness stacks are empty. */
+            throw std::ios_base::failure("Superfluous witness record");
+        }
+    }
+    if (flags) {
+        /* Unknown flag in the serialization */
+        throw std::ios_base::failure("Unknown transaction optional data");
+    }
+    s >> tx.nLockTime;
+}
+----
+
+The first line does the same thing of the first one of the previous function: `fAllowWitness` checks if witnesses need to be serialized.
+
+Then, the first 4 bytes are deserialized into the `tx.nVersion` member, the value 0 is assigned to `flags` and the `tx.vin` and `tx.vout` vectors have all elements removed, just in case.
+
+The next line `s >> tx.vin;` deserialized the inputs. If the size of the inputs is 0, it means the `marker` field (described in the second row of BIP 144 table) is present and it this a segwit transaction. If `fAllowWitness` is also true, so the `flags`, `tx.vin` and `tx.vout` are deserialized. According to the BIP, the `flag` value should be 1. 
+
+If the size of `tx.vin` is not 0, so it is a legacy transaction and `tx.vout` is deserialized. Except in the last line, no more action will be done with a legacy transaction in this function.
+
+If the witness flag is present, and `fAllowWitness` is true, the next step is deserialize the witness data of each input. If there is no witness, a exception will be throw because it makes no sense a segwit transaction without witness data.
+
+The last step is to add the `nLockTime`. It is done for both legacy or segwit transaction.
+
 
 === SERIALIZE_TRANSACTION_NO_WITNESS Flag
 
