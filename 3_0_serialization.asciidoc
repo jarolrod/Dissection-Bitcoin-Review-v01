@@ -157,7 +157,7 @@ However, this comes at a cost. Third party components may contain vulnerabilitie
 
 === PR #2409 - CSerializeData
 
-In the https://github.com/bitcoin/bitcoin/pull/2409[PR #2409], the `std::vector<char, zero_after_free_allocator<char> >` was defined as `CSerializeData`, so that it could be reused in `net.h` for network optimalizations. This change have had no effect in the serialization behavior.
+In the https://github.com/bitcoin/bitcoin/pull/2409[PR #2409], the `std::vector<char, zero_after_free_allocator<char> >` was defined as `CSerializeData`, so that it could be reused in `net.h` for network optimizations. This change have had no effect in the serialization behavior.
 
 [source,c++]  
 ----

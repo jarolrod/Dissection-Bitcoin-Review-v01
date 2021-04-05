@@ -1,0 +1,27 @@
+_Q: What cases would you want to use the explicit keyword?_
+
+A: It prevents implicit conversion for overloaded function arguments.
+
+_Q: What does `vfExec` do?_
+
+A: Vector vfExec is a stack that records the position of the current instruction within a nested OP_IF statement. This position determines whether the current instruction should be executed or not.
+
+_Q: Why is it `fExec`  false if there is any false in the `vfExec`?_
+
+A: Any false in vfExec indicates that the current instruction is in some false branch of the nested OP_IF statement and thus should not be executed.
+
+_Q: CBigNum is a wrapper around type BIGNUM defined in openssl. Since openssl is no longer a Bitcoin Core dependency, where is BIGNUM now defined?_
+
+A: It was replaced by CScriptNum. It is defined in script/script.h. +
+Numeric opcodes are restricted to operating on 4-byte integers but the results can be more than 4 bytes and they are valid as long as they are not used in a subsequent numeric operation. CScriptNum stores the results as an int64 and throws an exception if arithmetic is done or the result is interpreted as an integer.
+
+_Q: What is mpi and how does it related to BIGNUM?_
+
+A: mpi is a format that consist of two parts: the first part (length-part) has 4 bytes; and it contains a number that is the length of the second part. The second part (data-part) is the actual big number. Both are represented in the big-endian format.
+
+_Q: Why did satoshi adopt little-endian for some things and big-endian for others?_
+
+A: Not sure. Maybe the Bitcoin application was developed on a little-endian CPU and the big-endian was used to communicate with third party libraries like OpenSSL.
+The https://github.com/bitcoin/bitcoin/issues/888 issue reported an error when running the Bitcoin application on a big endian CPU.
+
+Q: Knowing what we know now, how would you design script?

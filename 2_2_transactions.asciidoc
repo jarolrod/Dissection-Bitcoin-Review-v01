@@ -406,6 +406,7 @@ The next-to-last row (P2WPKH) is `OP_0 20-byte hash` and the last one (P2WSH) is
 
 `CScript` is a subclass of `CScriptBase`, which is a kind of  vector called `prevector`, that allows a more efficient memory allocation  in cases where they normally contain a small number of small elements. Since a Bitcoin script are not allowed to be more than 520 bytes long. And the scripts' opcodes are of the type integers or bools, so the size of each of them is no more than 4 bytes. So `prevector` is the ideal for this case and this data struct is better discussed in the link:3_0_serialization.asciidoc#pr-6914---prevector[Prevector] section.
 
+The operators are defined in the `enum opcodetype` of the `src/script/script.h` and the 
 
 
 
