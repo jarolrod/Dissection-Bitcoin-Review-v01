@@ -52,6 +52,7 @@ bool SendCoinsDialog::PrepareSendText(QString& question_string, QString& informa
 }
 ----
 
+[[cscript]]
 === CScript
 
 The process of creating transaction involves multiple steps. The first one we will look over is the creation of the `scriptPubKey` for each recipient.
@@ -64,6 +65,7 @@ Each of those patterns has a instructions set implemented in a programming langu
 
 The table below shows the commands of each pattern.
 
+[[script-instructions-table]]
 [%autowidth]
 |===
 |Script |ScriptPubKey Instructions 
@@ -127,7 +129,7 @@ WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransact
 
 === DecodeDestination
 
-`CTxDestination` is an instance of `std::variant`, what allows it to hold multiple types of data. It can hold the following types: `CNoDestination`, `PKHash`, `ScriptHash`, `WitnessV0ScriptHash`, `WitnessV0KeyHash` and `WitnessUnknown`. + 
+`CTxDestination` is an instance of `boost::variant`, what allows it to hold multiple types of data. It can hold the following types: `CNoDestination`, `PKHash`, `ScriptHash`, `WitnessV0ScriptHash`, `WitnessV0KeyHash` and `WitnessUnknown`. + 
 They represent internal data types encoded in a bitcoin address. The table below shows the variant type and its equivalent locking script (which is called `destination` throughout the code).
 
 [%autowidth]
@@ -321,6 +323,91 @@ The next steps are:
 If none these conditions are met, it will return a `WitnessUnknown()` instance if the address has a valid bech32 format. Else it will return `CNoDestination` instance.
 
 // continue in WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransaction &transaction, const CCoinControl& coinControl) ln 178
+
+=== GetScriptForDestination
+
+As previously stated, `CTxDestination DecodeDestination(...)` returns a `CTxDestination` that is a `boost::variant` type, that can be any of the common Bitcoin script template (PKHash, ScriptHash, WitnessV0ScriptHash and WitnessV0KeyHash). Also there are `CNoDestination` and `WitnessUnknown` in case the function is not able to decode the address.
+
+So after the `DecodeDestination(..)` returns, the result is passed to `GetScriptForDestination(...)` in the `standard.cpp` file. As the name indicates, this function will find the script template related to the  decoded destination. The most simple way to identify which destination type is the `dest` variable would be with value retrieval by `boost::get<T>()`. 
+
+[source,c++]  
+----
+// This code does not exist in Bitcoin Core.
+// It is just an example of `boost::get<T>()` usage
+if ( PKHash* keyID = boost::get<PKHash>( &dest ) )
+    // ....
+else if ( ScriptHash* scriptID = boost::get<ScriptHash>( &dest ) )
+    // ...
+else if ( WitnessV0KeyHash* id = boost::get<WitnessV0KeyHash>( &dest ) )
+    // ...
+----
+
+But this aprroach is a quite brittle: if a new  bounded types are added to `CTxDestination` and they are not handled in the code, the function will silently return and without any error. It will likely lead to the introduction of subtle logical errors detectable only at runtime. In more complex programs (like Bitcoin Core), it could take considerable time to identify and locate the error.
+
+A simple solution would be to throw an exception at the end of the function. If no condition is met, the exception would be reached. But there is a pattern that already does this and more and And this is the one used in the `CScript GetScriptForDestination...)` function.
+
+[source,c++]  
+----
+CScript GetScriptForDestination(const CTxDestination& dest)
+{
+    return boost::apply_visitor(CScriptVisitor(), dest);
+}
+----
+
+
+This pattern is called _visitation_. This pattern ensures that the each bounded type is explicitly handled. Otherwise, it will result in a compile-time error. So if new type was added and not handled by `CScriptVisitor()`, this error will be found even before running the executable. The command `boost::apply_visitor(...)` apply this pattern.
+
+[source,c++]  
+----
+namespace
+{
+class CScriptVisitor : public boost::static_visitor<CScript>
+{
+public:
+    CScript operator()(const CNoDestination& dest) const
+    {
+        return CScript();
+    }
+
+    CScript operator()(const PKHash& keyID) const
+    {
+        return CScript() << OP_DUP << OP_HASH160 << ToByteVector(keyID) << OP_EQUALVERIFY << OP_CHECKSIG;
+    }
+
+    CScript operator()(const ScriptHash& scriptID) const
+    {
+        return CScript() << OP_HASH160 << ToByteVector(scriptID) << OP_EQUAL;
+    }
+
+    CScript operator()(const WitnessV0KeyHash& id) const
+    {
+        return CScript() << OP_0 << ToByteVector(id);
+    }
+
+    CScript operator()(const WitnessV0ScriptHash& id) const
+    {
+        return CScript() << OP_0 << ToByteVector(id);
+    }
+
+    CScript operator()(const WitnessUnknown& id) const
+    {
+        return CScript() << CScript::EncodeOP_N(id.version) << std::vector<unsigned char>(id.program, id.program + id.length);
+    }
+};
+} // namespace
+----
+
+The class `CScriptVisitor` is very interesting. It extends `boost::static_visitor<CScript>`, so it can be used as `Visitor` in `boost::apply_visitor(Visitor & visitor, Variant & operand)`. The method `CScript operator()(...)` is overloaded for each CTxDestination bounded type and return the related script.
+Those methods above can be compared with the xref:script-instructions-table[_ScriptPubKey Instructions table_], in the <<cscript>> section. The template of each script is exactly the same  described in table.
+
+For example, the table second row (P2PKH) is `<pubKey> OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG` and in the code, it is `CScript() << OP_DUP << OP_HASH160 << ToByteVector(keyID) << OP_EQUALVERIFY << OP_CHECKSIG;`. +
+The fourth row (P2SH) is `OP_HASH160 scriptHash OP_EQUAL` and in the code `CScript() << OP_HASH160 << ToByteVector(scriptID) << OP_EQUAL;`. +
+The next-to-last row (P2WPKH) is `OP_0 20-byte hash` and the last one (P2WSH) is `OP_0 32-byte hash`. In the code, both are apparently the same `CScript() << OP_0 << ToByteVector(id);`, but the difference as explicited in the table that the size of the byte vector will be 20 bytes for P2WPKH and 32 bytes for P2WSH.
+
+`CScript` is a subclass of `CScriptBase`, which is a kind of  vector called `prevector`, that allows a more efficient memory allocation  in cases where they normally contain a small number of small elements. Since a Bitcoin script are not allowed to be more than 520 bytes long. And the scripts' opcodes are of the type integers or bools, so the size of each of them is no more than 4 bytes. So `prevector` is the ideal for this case and this data struct is better discussed in the link:3_0_serialization.asciidoc#pr-6914---prevector[Prevector] section.
+
+
+
 
 
 

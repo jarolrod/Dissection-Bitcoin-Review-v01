@@ -498,7 +498,7 @@ The serialization of a transaction are usually called when:
 * New block has arrived.
 // PSBT
 
-=== Sending Requested Transaction
+=== Sending Requested Transaction - CVectorWriter
 
 Let's look into the call stack of the first example. The `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h#L187[class CConnman]` (Connection Manager) has the method `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.cpp#L2210[void CConnman::ThreadMessageHandler()]` that is associated to the thread `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h#L594[threadMessageHandler]` in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.cpp#L2550[net.cpp]`. This association is done when the node starts `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L2004[node.connman->Start(...)]` in the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L1263[AppInitMain(...)]` from `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp[init.cpp]`.
 
@@ -508,7 +508,7 @@ _inv_ allows a node to advertise its knowledge of one or more objects. It can be
 _getdata_ is used in response to inv, to retrieve the content of a specific object, and is usually sent after receiving an inv packet, after filtering known elements. It can be used to retrieve transactions, but only if they are in the memory pool. +
 _tx_ describes a bitcoin transaction, in reply to getdata. The data format of this message is exactly the same that was seen in <<transactions-serialization---current-implementation>>.
 
-When new messages comes, the aforementioned method `void CConnman::ThreadMessageHandler()` calls `m_msgproc->ProcessMessages(...);` to process them. And then others functions will be called do handle specific network flow. At some point, the the method `CSerializedNetMsg Make(...)` will be reached and a CVectorWriter is created to handle the transaction serialization.
+When new messages comes, the aforementioned method `void CConnman::ThreadMessageHandler()` calls `m_msgproc->ProcessMessages(...);` to process them. And then others functions will be called to handle network-related activities. At some point, the the method `CSerializedNetMsg Make(...)` will be reached and a CVectorWriter object is created to handle the transaction serialization.
 
 [source,c++]  
 ----
@@ -529,12 +529,12 @@ public:
 }
 ----
 
-Since the node can be sending one or more objects, `CVectorWriter` streamer is used, since it is the more appropriated one for a byte vector. The SER_NETWORK indicates the kind of serialization to carry out, although it does not make a difference in the case of a transaction, as it is serialized in the same way for any flags. But the flags are present in this code because `CSerializedNetMsg Make(...)` is used to create network messages, it is not only about transactions.
+Since the node can be sending one or more objects, `CVectorWriter` stream is used, since it is the more appropriated one for a byte vector. The SER_NETWORK indicates the kind of serialization to carry out, although it does not make a difference in the case of a transaction, as it is serialized in the same way for any flags. But the flags are present in this code because `CSerializedNetMsg Make(...)` is used to create network messages, it is not only about transactions.
 
 // Explain better about the flags
 // if (s.GetType() & SER_DISK) { - class CAddress - protocl.h is a good example
 
-When instantiated, the `CVectorWriter` will call `::SerializeMany(...)`. It is important to understand this function is recursive. The classes implements the serialization for  only one object. If there are more than one, then vector serialization will be used and each element of the vector will be individually serialized. So the `::SerializeMany(...)` calls `::Serialize(...);` to handle one single object and then _unpack_ the parameters. This is done breaking the vector parameter in two: `const Arg& arg, const Args&... args` and then calling itself again using the ellipse (three dots) operator `::SerializeMany(s, args...);`.
+When instantiated, the `CVectorWriter` will call `::SerializeMany(...)`. It is important to understand that this function is recursive. The classes implements the serialization for  only one object. If there are more than one, then vector serialization will be used and each element of the vector will be individually serialized. So the `::SerializeMany(...)` calls `::Serialize(...);` to handle one single object and then _unpack_ the parameters. This is done breaking the vector parameter in two: `const Arg& arg, const Args&... args` and then calling itself again using the ellipse (three dots) operator `::SerializeMany(s, args...);`.
 
 In this case, it is about just one transaction (_tx_ message), so the `::Serialize(...)` will be called only once.
 
