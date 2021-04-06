@@ -1,0 +1,75 @@
+[[bitcoin-architecture]]
+== 1.0 Bitcoin Architecture
+
+=== Executables
+
+To be able to interact with Bitcoin network, the user needs to connect to a Bitcoin node. But what is a node? It is software which main purposes are:
+
+* Download the blockchain.
+* Enforce the rules of the network.
+* Validate and relay the transactions.
+
+Running own node is of utmost importance when spending or transferring the bitcoins. The other option is trusting other nodes which is a major security hole. When doing it, the user is not only leaking personal data, but also trusting in the data and in rules defined by the others, who can be malicious agents and harmful to the network or even to the user.
+
+The other component necessary to store and move coins is a wallet. The primary function of the wallet is to manage the private keys and sign transactions.
+
+Bitcoin protocol does not have the concept of accounts, like banks. To receive coins (and move them posteriorly), the wallet generates unfathomable big numbers called private keys, which should be kept secret by the user.
+
+Signing a transaction means the user authorized the transaction. The wallet will use the private key associated to the coin(s) the user wants to spend to create the signature.
+
+Node and wallet are completely different things, although they can eventually come together in the same software. Node is related to bitcoin network and protocol while a wallet is related to the one’s private keys and transactions. It is very important to distinguish very well these two concepts to better understanding of Bitcoin architecture.
+
+Bitcoin Core has been the reference implementation since its first version, and it is not only one software. Bitcoin Core is a solution that includes a node, a graphic interface, and a command line interface. There are also wallet features (including a sophisticated coin selection) but since version v0.21, wallets are no longer created by default. The reason is to make the use of multiple wallets more intuitive.
+
+To start a node simple run the main app bitcoind implemented in src\bitcoind.cpp. This executable is expected to run as a daemon (in background). It also provides a REST interface, so anyone authorized can access and work with the node.
+
+After running the daemon, the user will be able to interact with the node through a command-line application called bitcoin-cli that is implemented in src\bitcoin-cli.cpp. It implements some RPC commands that are sent via REST to the node (the bitcoind daemon) and process the results.
+
+Another and simpler and friendly option to start the node and operate it is starting bitcoin-qt, implemented in src\qt\main.cpp. This one is an intuitive graphic interface, which all interactions happen through buttons. The user can create multiple wallets and check other information about the node as the peers’ connection and network statistics. 
+
+
+.Bitcoin Core Executables
+image::images/chapter_1_0/executables.svg[]
+[CChainParams, align="center"]
+
+{empty} +
+
+=== Protocol - P2P
+
+Bitcoin is a peer-to-peer protocol. There is no central server that can determine the rules. So, to be able to communicate with other peers and exchange information about the network, transactions and the chain state, the nodes need to establish a common protocol, so they can understand each other.
+
+The file `src/protocol.h` defines all types of messages (`namespace NetMsgType`) that will be used in this communication. As can be seen in the code below, each message has a comment with a succinct description of its purpose.
+
+[source,c++]  
+----
+/**
+ * Bitcoin protocol message types. When adding new message types, don't forget
+ * to update allNetMessageTypes in protocol.cpp.
+ */
+namespace NetMsgType {
+
+/**
+ * The version message provides information about the transmitting node to the
+ * receiving node at the beginning of a connection.
+ */
+extern const char* VERSION;
+/**
+ * The verack message acknowledges a previously-received version message,
+ * informing the connecting node that it can begin to send other messages.
+ */
+extern const char* VERACK;
+// ...
+/**
+ * The inv message (inventory message) transmits one or more inventories of
+ * objects known to the transmitting peer.
+ */
+extern const char* INV;
+/**
+ * The getdata message requests one or more data objects from another node.
+ */
+extern const char* GETDATA;
+// ...
+}
+----
+
+// add peers

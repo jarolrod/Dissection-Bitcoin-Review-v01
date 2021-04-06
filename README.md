@@ -3,7 +3,7 @@
 Proposal: Review and update of the book "Dissection of Bitcoin"
 
 
-
+* [Architecture](1_0_Bitcoin_Architecture.asciidoc)
 * [Adresses](2_1_bitcoin_address.asciidoc)
 * [Transactions](2_2_transactions.asciidoc)
 * [Serialization](3_0_serialization.asciidoc)
