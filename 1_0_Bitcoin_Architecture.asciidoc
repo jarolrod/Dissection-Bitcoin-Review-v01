@@ -3,21 +3,23 @@
 
 === Executables
 
-To be able to interact with Bitcoin network, the user needs to connect to a Bitcoin node. But what is a node? It is software which main purposes are:
+To be able to interact with Bitcoin network, the user needs to connect to a Bitcoin node, a software whose main purposes are:
 
 * Download the blockchain.
 * Enforce the rules of the network.
 * Validate and relay the transactions.
 
-Running own node is of utmost importance when spending or transferring the bitcoins. The other option is trusting other nodes which is a major security hole. When doing it, the user is not only leaking personal data, but also trusting in the data and in rules defined by the others, who can be malicious agents and harmful to the network or even to the user.
+Running your own node is of utmost importance when spending or transferring the bitcoins. The other option is trusting other nodes which is a major security hole. When doing it, the user is not only leaking personal data, but also trusting in the data and in the rules defined by others, who can be malicious agents or harmful to the network or even harmful to the user.
 
 The other component necessary to store and move coins is a wallet. The primary function of the wallet is to manage the private keys and sign transactions.
 
-Bitcoin protocol does not have the concept of accounts, like banks. To receive coins (and move them posteriorly), the wallet generates unfathomable big numbers called private keys, which should be kept secret by the user.
+Bitcoin protocol does not have the concept of accounts, like banks. Wallets manage a pool of unfathomable random numbers called private keys, which should be kept secret by the user. Bitcoin addresses are derived from these private keys and they can be used to receive coins (and move them later). Only one receiving address must be used for each transaction.
 
-Signing a transaction means the user authorized the transaction. The wallet will use the private key associated to the coin(s) the user wants to spend to create the signature.
+Signing a transaction means the user is moving the money and has authorized the transaction. To create the signature, the wallet will use the private key associated to the coin(s) the user wants to spend.
 
-Node and wallet are completely different things, although they can eventually come together in the same software. Node is related to bitcoin network and protocol while a wallet is related to the one’s private keys and transactions. It is very important to distinguish very well these two concepts to better understanding of Bitcoin architecture.
+Node and wallet are completely different things, although they can eventually come together in the same software. Node is related to bitcoin network and protocol while a wallet is related to the one’s private keys and transactions. It is very important to know the difference between these two concepts to be able to have a better understanding of Bitcoin architecture.
+
+// ---
 
 Bitcoin Core has been the reference implementation since its first version, and it is not only one software. Bitcoin Core is a solution that includes a node, a graphic interface, and a command line interface. There are also wallet features (including a sophisticated coin selection) but since version v0.21, wallets are no longer created by default. The reason is to make the use of multiple wallets more intuitive.
 
@@ -72,4 +74,186 @@ extern const char* GETDATA;
 }
 ----
 
-// add peers
+But how does the node find the other peers to exchange messages ? When running for first time, the node connect to a bunch of server denominated DNS Seeds which provides a list of IP addresses that are running (or were recently running) a Bitcoin client. After connecting to those IP addresses, the node starts to exchange messages and other new addresses with the peers. +
+DNS seeds are  hardcoded and stored in `src/chainparams.cpp`.
+
+[source,c++]  
+----
+vSeeds.emplace_back("seed.bitcoin.sipa.be"); // Pieter Wuille, only supports x1, x5, x9, and xd
+vSeeds.emplace_back("dnsseed.bluematt.me"); // Matt Corallo, only supports x9
+vSeeds.emplace_back("dnsseed.bitcoin.dashjr.org"); // Luke Dashjr
+vSeeds.emplace_back("seed.bitcoinstats.com"); // Christian Decker, supports x1 - xf
+vSeeds.emplace_back("seed.bitcoin.jonasschnelli.ch"); // Jonas Schnelli, only supports x1, x5, x9, and xd
+----
+
+New peers can be also manually added with the command `-addnode=<addr>`. The connection parameters, like `DEFAULT_MAX_PEER_CONNECTIONS` or `MAX_ADDNODE_CONNECTIONS`, can be found in the `net.h` file.
+
+== Concurrency model
+
+The class thread represents a single thread of execution. Threads allow multiple functions to execute concurrently.
+
+Most threads are starded (directly or indirectly) in `init.cpp`.
+
+=== `init.cpp:AppInitMain(...)` and `CConnman::Start(...)`
+
+When the node starts, `init.cpp:AppInitMain(...)` calls `node.connman->Start(*node.scheduler, connOptions)`. In the `CConnman::Start(...)` the network-related threads are instantiated and excuted.
+
+=== TraceThread
+
+`TraceThread` is a wrapper for a function that just calls it once. It also names the thread and handles `boost::thread_interrupted` exception. Usually used as _fn_ argument to thread constructor `thread (Fn&& fn, Args&&... args)`.
+
+[source,c++]  
+----
+template <typename Callable> void TraceThread(const char* name,  Callable func)
+{
+    util::ThreadRename(name);
+    try
+    {
+        LogPrintf("%s thread start\n", name);
+        func();
+        LogPrintf("%s thread exit\n", name);
+    }
+    catch (const boost::thread_interrupted&)
+    {
+        LogPrintf("%s thread interrupt\n", name);
+        throw;
+    }
+    catch (const std::exception& e) {
+        PrintExceptionContinue(&e, name);
+        throw;
+    }
+    catch (...) {
+        PrintExceptionContinue(nullptr, name);
+        throw;
+    }
+}
+----
+
+// Script Verification - nproc or 16 - ThreadScriptCheck()
+// Loading blocks - 1 - ThreadImport()
+=== Loading blocks
+
+One of the first thing the node need to do is load the blocks and decides which chain to work.
+
+The thread `g_load_block` invoke the function `void ThreadImport(...)` to load the blocks on startup. If the user is rebuilding the blockchain index (`-reindex`) or is loading blocks directly from files (`-loadblock`), it will be handled in this thread. After loding the blocks, it tries to find the best chain in `CChainState::ActivateBestChain(...)`.
+
+It happens in the `init.cpp:AppInitMain(...)`.
+
+[source,c++]  
+----
+std::vector<fs::path> vImportFiles;
+    for (const std::string& strFile : args.GetArgs("-loadblock")) {
+        vImportFiles.push_back(strFile);
+    }
+
+    g_load_block = std::thread(&TraceThread<std::function<void()>>, "loadblk", [=, &chainman, &args] {
+        ThreadImport(chainman, vImportFiles, args);
+    });
+----
+
+=== Servicing RPC Calls
+
+To allow user to interact with the node, an HTTP server should be enabled to process the requests. In order to do it, the `init.cpp:AppInitServers(...)` calls `httpserver.cpp:InitHTTPServer()` `httpserver.cpp:StartHTTPServer()`.
+The first method, as the name implies, initializes the server and the second one constructs new thread objects.
+
+`g_thread_http` is event dispatcher thread, that manages the http event loop. It is interrupted when  InterruptHTTPServer() is called.
+
+`g_thread_http_workers` distributes the work over multiple threads and handles longer requests off the event loop thread. `HTTPWorkQueueRun` is a simple wrapper to set thread name and run work queue. The number of the threads to service RPC calls is defined by the configuration argument `-rpcthreads` or `httpserver.h:DEFAULT_HTTP_THREADS`, whichever is greater.
+
+[source,c++]  
+----
+static std::thread g_thread_http;
+static std::vector<std::thread> g_thread_http_workers;
+
+void StartHTTPServer()
+{
+    LogPrint(BCLog::HTTP, "Starting HTTP server\n");
+    int rpcThreads = std::max((long)gArgs.GetArg("-rpcthreads", DEFAULT_HTTP_THREADS), 1L);
+    LogPrintf("HTTP: starting %d worker threads\n", rpcThreads);
+    g_thread_http = std::thread(ThreadHTTP, eventBase);
+
+    for (int i = 0; i < rpcThreads; i++) {
+        g_thread_http_workers.emplace_back(HTTPWorkQueueRun, workQueue, i);
+    }
+}
+----
+
+=== Load Peer Adresses From DNS Seeds
+
+As said before, the node initially queries the hardcoded DNS Seeds to find new peers to connect to.
+
+`net.h:std::thread threadDNSAddressSeed` is a thread created with `CConnman::ThreadDNSAddressSeed(...)` wrapped into `TraceThread(...)`. It will run once when node starts.
+
+It is called in `init.cpp:AppInitMain(...)` function with the command `node.connman->Start(*node.scheduler, connOptions)`.
+
+Note if a particular list is provided in the configuration parameters ("-dnsseed"), this thread will not be instantiated.
+
+[source,c++]  
+----
+if (!gArgs.GetBoolArg("-dnsseed", true))
+    LogPrintf("DNS seeding disabled\n");
+else
+    threadDNSAddressSeed = std::thread(&TraceThread<std::function<void()> >, "dnsseed", std::function<void()>(std::bind(&CConnman::ThreadDNSAddressSeed, this)));
+----
+
+=== Send And Receive Messages To And From Peers
+
+`std::thread threadSocketHandler` is created using CConnman::ThreadSocketHandler() wrapped into `TraceThread(...)`.
+
+[source,c++]  
+----
+bool CConnman::Start(...)
+{
+    threadSocketHandler = std::thread(&TraceThread<std::function<void()> >, "net", std::function<void()>(std::bind(&CConnman::ThreadSocketHandler, this)));
+}
+----
+
+=== Process Messages from `net` -> `net_processing`
+
+When the node starts, `init.cpp:AppInitMain(...)` calls `node.connman->Start(*node.scheduler, connOptions)`.
+
+`std::thread threadMessageHandler` is created using CConnman::ThreadMessageHandler wrapped into `TraceThread(...)`.
+
+[source,c++]  
+----
+bool CConnman::Start(...)
+{
+    // Process messages
+    threadMessageHandler = std::thread(&TraceThread<std::function<void()> >, "msghand", std::function<void()>(std::bind(&CConnman::ThreadMessageHandler, this)));
+}
+----
+
+It looks strange at first, because `TraceThread(...)` ensures unique execution and the node will process several messages, not just one.
+
+The explanation is the code `CConnman::ThreadMessageHandler()` is a loop that keeps running until be eventually interrupted by the `flagInterruptMsgProc` flag.
+
+This flag is only set `true` in the `CConnman::Interrupt()` that interrupts all connections.
+
+[source,c++]  
+----
+void CConnman::ThreadMessageHandler()
+{
+    while (!flagInterruptMsgProc)
+    {
+        // ...
+
+        for (CNode* pnode : vNodesCopy)
+        {
+            if (pnode->fDisconnect)
+                continue;
+
+            // Receive messages
+            bool fMoreNodeWork = m_msgproc->ProcessMessages(pnode, flagInterruptMsgProc);
+            // ...
+            // Send messages
+            {
+                LOCK(pnode->cs_sendProcessing);
+                m_msgproc->SendMessages(pnode);
+            }
+            // ...
+        }
+
+        // ...
+    }
+}
+----
