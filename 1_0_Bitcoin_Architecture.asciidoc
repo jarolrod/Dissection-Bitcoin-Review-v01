@@ -235,7 +235,10 @@ This flag is only set `false` in the `CConnman::Interrupt()` that interrupts all
 
 === Initializing Network Connections
 
-The thread `std::thread threadOpenConnections` opens and manages connections to other peers. Before instantiating this thread, it is checked if the application is started with "-connect=0" or "-connect=<ip>". If it is set to 0, this thread will not be created. If an specific IP was set, it will be the only active outbound connection. If no "-connect" parameter was passed, it will initiate the outbound network connections.
+The thread `std::thread threadOpenConnections` opens and manages connections to other peers. Before instantiating this thread, it is checked if the application is started with `-connect=0` or `-connect=<ip>`. +
+If `-connect` is set to 0, this `threadOpenConnections` thread will not be created. +
+If an specific IP was set, it will be the only one active outbound connection with that IP. +
+If no "-connect" parameter was passed, all the outbound network connections will be initiate.
 
 [source,c++]  
 ----
