@@ -100,7 +100,7 @@ When the node starts, `init.cpp:AppInitMain(...)` calls `node.connman->Start(*no
 
 === TraceThread
 
-`TraceThread` is a wrapper for a function that just calls it once. It also names the thread and handles `boost::thread_interrupted` exception. Usually used as _fn_ argument to thread constructor `thread (Fn&& fn, Args&&... args)`.
+`TraceThread` is a wrapper for a function that just calls it once. It also names the thread and handles `boost::thread_interrupted` exception. In Bitcoin Core code, it is usually used as _fn_ argument to thread constructor `thread (Fn&& fn, Args&&... args)`.
 
 [source,c++]  
 ----
@@ -142,13 +142,13 @@ It happens in the `init.cpp:AppInitMain(...)`.
 [source,c++]  
 ----
 std::vector<fs::path> vImportFiles;
-    for (const std::string& strFile : args.GetArgs("-loadblock")) {
-        vImportFiles.push_back(strFile);
-    }
+for (const std::string& strFile : args.GetArgs("-loadblock")) {
+    vImportFiles.push_back(strFile);
+}
 
-    g_load_block = std::thread(&TraceThread<std::function<void()>>, "loadblk", [=, &chainman, &args] {
-        ThreadImport(chainman, vImportFiles, args);
-    });
+g_load_block = std::thread(&TraceThread<std::function<void()>>, "loadblk", [=, &chainman, &args] {
+    ThreadImport(chainman, vImportFiles, args);
+});
 ----
 
 === Servicing RPC Calls
@@ -198,13 +198,66 @@ else
 
 === Send And Receive Messages To And From Peers
 
-`std::thread threadSocketHandler` is created using CConnman::ThreadSocketHandler() wrapped into `TraceThread(...)`.
+`std::thread threadSocketHandler` is created using `CConnman::ThreadSocketHandler()` method wrapped into `TraceThread(...)`.
 
 [source,c++]  
 ----
 bool CConnman::Start(...)
 {
     threadSocketHandler = std::thread(&TraceThread<std::function<void()> >, "net", std::function<void()>(std::bind(&CConnman::ThreadSocketHandler, this)));
+}
+----
+
+It seems strange at first, because `TraceThread(...)` ensures unique execution and the node will send and receive messages several time while connected, not just one time.
+
+But a close look into the `CConnman::ThreadSocketHandler()` code shows it has  a loop that keeps running until be eventually interrupted by the `interruptNet` flag.
+
+[source,c++]  
+----
+void CConnman::ThreadSocketHandler()
+{
+    while (!interruptNet)
+    {
+        DisconnectNodes();
+        NotifyNumConnectionsChanged();
+        SocketHandler();
+    }
+}
+----
+
+This flag is only set `false` in the `CConnman::Interrupt()` that interrupts all connections.
+
+`CConnman::DisconnectNodes()` disconnect any connected nodes if the `fNetworkActive` is false. It can be disabled/enabled by `setnetworkactive` RPC command. The function also disconnects unused nodes and delete disconnected nodes.
+
+`NotifyNumConnectionsChanged()` updates the numer of connections and ,if the client interface is enabled, it notifies when the number of connections change.
+
+`SocketHandler()` handles socket connections, incoming messages (`pnode->vRecvMsg`) and the messages to send (`pnode->cs_vSend`);
+
+=== Initializing Network Connections
+
+The thread `std::thread threadOpenConnections` opens and manages connections to other peers. Before instantiating this thread, it is checked if the application is started with "-connect=0" or "-connect=<ip>". If it is set to 0, this thread will not be created. If an specific IP was set, it will be the only active outbound connection. If no "-connect" parameter was passed, it will initiate the outbound network connections.
+
+[source,c++]  
+----
+if (connOptions.m_use_addrman_outgoing || !connOptions.m_specified_outgoing.empty())
+        threadOpenConnections = std::thread(&TraceThread<std::function<void()> >, "opencon", std::function<void()>(std::bind(&CConnman::ThreadOpenConnections, this, connOptions.m_specified_outgoing)));
+----
+
+The total number of outbound connection `m_max_outbound` is defined in `src/net.h`. It usually will be 11, the sum of the full relay (8), block relay (2) only and feeler (1) connections.
+
+[source,c++]  
+----
+/** Maximum number of automatic outgoing nodes over which we'll relay everything (blocks, tx, addrs, etc) */
+static const int MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8;
+/** Maximum number of addnode outgoing nodes */
+static const int MAX_ADDNODE_CONNECTIONS = 8;
+/** Maximum number of block-relay-only outgoing connections */
+static const int MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2;
+/** Maximum number of feeler connections */
+static const int MAX_FEELER_CONNECTIONS = 1;
+
+void Init(...) {
+    m_max_outbound = m_max_outbound_full_relay + m_max_outbound_block_relay + nMaxFeeler;
 }
 ----
 
