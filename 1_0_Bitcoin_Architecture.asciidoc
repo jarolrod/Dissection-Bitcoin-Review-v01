@@ -129,13 +129,173 @@ template <typename Callable> void TraceThread(const char* name,  Callable func)
 }
 ----
 
-// Script Verification - nproc or 16 - ThreadScriptCheck()
-// Loading blocks - 1 - ThreadImport()
+=== Script Verification
+
+The function that perform the script verification is `bool interpreter.cpp:VerifyScript(...)`. It is called in at least three points of the application:
+
+* When the node receives a new transaction, which is handled by `void net_processing.cpp:PeerManager::ProcessMessage(...)` when the received message is a _tx_ type (`if (msg_type == NetMsgType::TX)`).
+
+* When the node wants to broadcast a new transaction. It is done by `TransactionError transaction.cpp:BroadcastTransaction(...)`.
+
+* When receiving a new block, `void net_processing.cpp:PeerManager::ProcessMessage(...)` will identify a _getblocks_ message type (`if (msg_type == NetMsgType::GETBLOCKS)`) and will call `bool validation.cpp:CChainState::ActivateBestChain(...)`.
+
+In the fist two case, `bool validation.cpp:AcceptToMemoryPool(...)` function is called to handle the new transaction. It will try to add the transaction to mempool. In the last case, the function that will handle the new block is `bool CChainState::ConnectBlock(...)`. Both of them ends up calling `validation.cpp:bool CheckInputScripts(...)`.
+
+`CheckInputScripts(...)` validates the scripts of all the inputs of the `const CTransaction& tx` transaction passed as parameter. However, the relevant parameter in this context is the `std::vector<CScriptCheck> *pvChecks = nullptr`. `CScriptCheck` is a closure representing one script verification and it stores references to the spending transaction.
+
+[source,c++]  
+----
+class CScriptCheck
+{
+    private:
+        CTxOut m_tx_out;
+        const CTransaction *ptxTo;
+        unsigned int nIn;
+        unsigned int nFlags;
+        bool cacheStore;
+        ScriptError error;
+        PrecomputedTransactionData *txdata;
+    // ...
+}
+----
+
+The `CScriptCheck` method that matters is the `bool validation.cpp:CScriptCheck::operator()()`. It overloads the operator `()` and perform the script validation (`VerifyScript(...)`).
+
+[source,c++]  
+----
+bool CScriptCheck::operator()() {
+    const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
+    const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
+    return VerifyScript(scriptSig, m_tx_out.scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, m_tx_out.nValue, cacheStore, *txdata), &error);
+}
+----
+
+So if the `std::vector<CScriptCheck> *pvChecks` is not null, the  `CheckInputScripts(...)` will add each script validation (`CScriptCheck check`) to the vector, so they can be executed in parallel. Otherwise, the script is verified immediately.
+
+[source,c++]  
+----
+bool CheckInputScripts(const CTransaction& tx, ..., std::vector<CScriptCheck> *pvChecks) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+{
+    // ...
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        CScriptCheck check(txdata.m_spent_outputs[i], tx, i, flags, cacheSigStore, &txdata);
+        if (pvChecks) {
+            pvChecks->push_back(CScriptCheck());
+            check.swap(pvChecks->back());
+        } else if (!check()) {
+            // ...
+        }
+        // ...
+    }
+    // ...
+}
+----
+
+The only function that makes use of script validation parallelization is the aforementioned `bool CChainState::ConnectBlock(...)` due to the quantity of transactions in a block. If the `g_parallel_script_checks` global parameter is true, the script verification vector that has been filled in `CheckInputScripts(...)` is allocated in  `CCheckQueueControl<CScriptCheck> control(...)`. The `control.Wait()` initiates the their execution and wait for the end. +
+`g_parallel_script_checks` is set in `AppInitMain(...)` that will be shown soon.
+
+[source,c++]  
+----
+bool CChainState::ConnectBlock(const CBlock& block, ...)
+{
+    // ...
+    CCheckQueueControl<CScriptCheck> control(fScriptChecks && g_parallel_script_checks ? &scriptcheckqueue : nullptr);
+    // ...
+
+    for (unsigned int i = 0; i < block.vtx.size(); i++)
+    {
+        if (!tx.IsCoinBase())
+        {
+            std::vector<CScriptCheck> vChecks;
+            if (!CheckInputScripts(tx,..., g_parallel_script_checks ? &vChecks : nullptr)) { /*...*/ }
+            control.Add(vChecks);  
+        }
+    }
+
+    if (!control.Wait()) {
+        LogPrintf("ERROR: %s: CheckQueue failed\n", __func__);
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "block-validation-failed");
+    }
+}
+----
+
+The code that will be excute the work (in this case, it is the script verification) can be found in `bool src/checkqueue.h:CCheckQueue::Loop(...)`.
+
+[source,c++]  
+----
+template <typename T>
+class CCheckQueue
+{
+private:
+    /** Internal function that does bulk of the verification work. */
+    bool Loop(bool fMaster = false)
+    {
+        // ...
+        do {
+            // ...
+            // execute work
+            for (T& check : vChecks)
+                if (fOk)
+                    fOk = check();
+            vChecks.clear();
+        } while (true);
+}
+----
+
+The number of script-checking threads that will be used is defined in `init.cpp:AppInitMain(...)`. The user can set the number of the threads using the argument `-par`. If the number is negative, it will limit the threads. +
+If the user does not pass the `-par` parameter, `GetNumCores()` is called to get the number of concurrent threads supported by the implementation. Then 1 is subtracted from this number because the the main thread is already being  used. `GetNumCores()` is just a wrapper for C++ standard function `std::thread::hardware_concurrency()`. +
+There is also a maximum number of dedicated script-checking threads allowed, that is 15 (`MAX_SCRIPTCHECK_THREADS = 15`).
+Note that `g_parallel_script_checks` is set to true, allowing parallelization in the `ConnectBlock(...)` function.
+
+[source,c++]  
+----
+bool AppInitMain(...)
+{
+    //...
+    int script_threads = args.GetArg("-par", DEFAULT_SCRIPTCHECK_THREADS);
+    if (script_threads <= 0) {
+        // -par=0 means autodetect (number of cores - 1 script threads)
+        // -par=-n means "leave n cores free" (number of cores - n - 1 script threads)
+        script_threads += GetNumCores();
+    }
+
+    // Subtract 1 because the main thread counts towards the par threads
+    script_threads = std::max(script_threads - 1, 0);
+
+    // Number of script-checking threads <= MAX_SCRIPTCHECK_THREADS
+    script_threads = std::min(script_threads, MAX_SCRIPTCHECK_THREADS);
+
+    LogPrintf("Script verification uses %d additional threads\n", script_threads);
+    if (script_threads >= 1) {
+        g_parallel_script_checks = true;
+        for (int i = 0; i < script_threads; ++i) {
+            threadGroup.create_thread([i]() { return ThreadScriptCheck(i); });
+        }
+    }
+    //...
+}
+----
+
+And finally the command `ThreadScriptCheck(i);` simply initiate a new worker thread one or several times, according to the `script_threads` value. Its implementation can be found in `src/validation.cpp`.
+
+[source,c++]  
+----
+static CCheckQueue<CScriptCheck> scriptcheckqueue(128);
+
+void ThreadScriptCheck(int worker_num) {
+    util::ThreadRename(strprintf("scriptch.%i", worker_num));
+    scriptcheckqueue.Thread();
+}
+----
+
+Therefore, these are the main steps in verifying the script. However, there is already a change after version v0.21, making it more efficient and reducing the dependency on `boost / thread`. It can be verified in the  https://github.com/bitcoin/bitcoin/pull/18710[PR #18710]. There is also an interesting CCheckQueue unit tests, implemented in the https://github.com/bitcoin/bitcoin/pull/9497/files[PR #9497].
+
+
 === Loading blocks
 
 One of the first thing the node need to do is load the blocks and decides which chain to work.
 
-The thread `g_load_block` invoke the function `void ThreadImport(...)` to load the blocks on startup. If the user is rebuilding the blockchain index (`-reindex`) or is loading blocks directly from files (`-loadblock`), it will be handled in this thread. After loding the blocks, it tries to find the best chain in `CChainState::ActivateBestChain(...)`.
+The thread `g_load_block` invoke the function `void ThreadImport(...)` to load the blocks on startup. If the user is rebuilding the blockchain index (`-reindex`) or is loading blocks directly from files (`-loadblock`), it will be handled in this thread. After loading the blocks, it tries to find the best chain in `CChainState::ActivateBestChain(...)`.
 
 It happens in the `init.cpp:AppInitMain(...)`.
 
@@ -153,12 +313,11 @@ g_load_block = std::thread(&TraceThread<std::function<void()>>, "loadblk", [=, &
 
 === Servicing RPC Calls
 
-To allow user to interact with the node, an HTTP server should be enabled to process the requests. In order to do it, the `init.cpp:AppInitServers(...)` calls `httpserver.cpp:InitHTTPServer()` `httpserver.cpp:StartHTTPServer()`.
-The first method, as the name implies, initializes the server and the second one constructs new thread objects.
+To allow user to interact with the node, an HTTP server should be enabled to process the requests. In order to do it, the `init.cpp:AppInitServers(...)` calls `httpserver.cpp:InitHTTPServer()` that, as the name implies, initializes the server and `httpserver.cpp:StartHTTPServer()` that constructs new thread objects.
 
 `g_thread_http` is event dispatcher thread, that manages the http event loop. It is interrupted when  InterruptHTTPServer() is called.
 
-`g_thread_http_workers` distributes the work over multiple threads and handles longer requests off the event loop thread. `HTTPWorkQueueRun` is a simple wrapper to set thread name and run work queue. The number of the threads to service RPC calls is defined by the configuration argument `-rpcthreads` or `httpserver.h:DEFAULT_HTTP_THREADS`, whichever is greater.
+`g_thread_http_workers` distributes the work over multiple threads and handles longer requests off the event loop thread. `HTTPWorkQueueRun` is a simple wrapper to set thread name and run work queue. The number of the threads to service RPC calls is defined by the configuration argument `-rpcthreads` or `httpserver.h:DEFAULT_HTTP_THREADS=4`, whichever is greater.
 
 [source,c++]  
 ----
@@ -184,9 +343,9 @@ As said before, the node initially queries the hardcoded DNS Seeds to find new p
 
 `net.h:std::thread threadDNSAddressSeed` is a thread created with `CConnman::ThreadDNSAddressSeed(...)` wrapped into `TraceThread(...)`. It will run once when node starts.
 
-It is called in `init.cpp:AppInitMain(...)` function with the command `node.connman->Start(*node.scheduler, connOptions)`.
+It is called in `init.cpp:AppInitMain(...)` function when the command `node.connman->Start(*node.scheduler, connOptions)` is executed.
 
-Note if a particular list is provided in the configuration parameters ("-dnsseed"), this thread will not be instantiated.
+Note if a particular list is provided in the configuration parameters (`-dnsseed`), this thread will not be instantiated.
 
 [source,c++]  
 ----
@@ -196,6 +355,7 @@ else
     threadDNSAddressSeed = std::thread(&TraceThread<std::function<void()> >, "dnsseed", std::function<void()>(std::bind(&CConnman::ThreadDNSAddressSeed, this)));
 ----
 
+[[send-and-receive-messages-to-and-from-peers]]
 === Send And Receive Messages To And From Peers
 
 `std::thread threadSocketHandler` is created using `CConnman::ThreadSocketHandler()` method wrapped into `TraceThread(...)`.
@@ -225,11 +385,11 @@ void CConnman::ThreadSocketHandler()
 }
 ----
 
-This flag is only set `false` in the `CConnman::Interrupt()` that interrupts all connections.
+This flag is set `false` only in the `CConnman::Interrupt()` that interrupts all connections.
 
 `CConnman::DisconnectNodes()` disconnect any connected nodes if the `fNetworkActive` is false. It can be disabled/enabled by `setnetworkactive` RPC command. The function also disconnects unused nodes and delete disconnected nodes.
 
-`NotifyNumConnectionsChanged()` updates the numer of connections and ,if the client interface is enabled, it notifies when the number of connections change.
+`NotifyNumConnectionsChanged()` updates the nubmer of connections and ,if the client interface is enabled, it notifies when the number of connections change.
 
 `SocketHandler()` handles socket connections, incoming messages (`pnode->vRecvMsg`) and the messages to send (`pnode->cs_vSend`);
 
@@ -237,8 +397,8 @@ This flag is only set `false` in the `CConnman::Interrupt()` that interrupts all
 
 The thread `std::thread threadOpenConnections` opens and manages connections to other peers. Before instantiating this thread, it is checked if the application is started with `-connect=0` or `-connect=<ip>`. +
 If `-connect` is set to 0, this `threadOpenConnections` thread will not be created. +
-If an specific IP is set, it will be the only one active outbound connection with that IP. +
-If no "-connect" parameter is passed, all the outbound network connections will be initiate.
+If an specific IP is set, there will be only one active outbound connection and with that IP. +
+If the `-connect` parameter is not passed, all the outbound network connections will be initiate.
 
 [source,c++]  
 ----
@@ -264,11 +424,25 @@ void Init(...) {
 }
 ----
 
+The use of `-connect=0` to disable automatic outbound connections has been implemented in https://bitcoin.org/en/release/v0.14.0#p2p-protocol-and-network-code[v0.14], with the the https://github.com/bitcoin/bitcoin/pull/9002[PR #9002].
+
+=== Opening Added Network Connections
+
+`std::thread threadMessageHandler` is created using `CConnman::ThreadOpenAddedConnections` wrapped into `TraceThread(...)`.
+
+`CConnman::ThreadOpenAddedConnections()` calls `CConnman::GetAddedNodeInfo()` to retrieve the nodes that has been` added manually and try to open connection with them calling `OpenNetworkConnection(...)`.
+
+[source,c++]  
+----
+// Initiate manual connections
+threadOpenAddedConnections = std::thread(&TraceThread<std::function<void()> >, "addcon", std::function<void()>(std::bind(&CConnman::ThreadOpenAddedConnections, this)));
+----
+
 === Process Messages from `net` -> `net_processing`
 
 When the node starts, `init.cpp:AppInitMain(...)` calls `node.connman->Start(*node.scheduler, connOptions)`.
 
-`std::thread threadMessageHandler` is created using CConnman::ThreadMessageHandler wrapped into `TraceThread(...)`.
+`std::thread threadMessageHandler` is created using `CConnman::ThreadMessageHandler` wrapped into `TraceThread(...)`.
 
 [source,c++]  
 ----
@@ -279,11 +453,9 @@ bool CConnman::Start(...)
 }
 ----
 
-It looks strange at first, because `TraceThread(...)` ensures unique execution and the node will process several messages, not just one.
+As already seen in <<send-and-receive-messages-to-and-from-peers>>, this code will not be executed once. `TraceThread(...)` ensures unique execution but the `CConnman::ThreadMessageHandler()` has a loop that keeps running until be eventually interrupted by the `flagInterruptMsgProc` flag.
 
-The explanation is the code `CConnman::ThreadMessageHandler()` is a loop that keeps running until be eventually interrupted by the `flagInterruptMsgProc` flag.
-
-This flag is only set `true` in the `CConnman::Interrupt()` that interrupts all connections.
+This flag is set `true` only in the `CConnman::Interrupt()` that interrupts all connections.
 
 [source,c++]  
 ----
