@@ -485,3 +485,211 @@ void CConnman::ThreadMessageHandler()
     }
 }
 ----
+
+=== Notifications Mechanism (`ValidationInterface`)
+
+A lot of event happens at same time in Bitcoin Core: new messages arrives all time, are processed and sometime, announcements need to be done. For example, if a wallet is connected to Bitcoin Core and a transaction related to this wallet arrives, the wallet needs to be notified; when a new block arrives, the chain and the wallet need to be updated; transaction also can be removed from mempool and it needs to be notified and so on.
+
+A good requirement for a mechanism to handle those notifications between components is to be asynchronous since any processing cannot be blocked due to notification as response is not needed.
+
+In Bitcoin Core, there are two main classes that implements the notification between the components, the `CValidationInterface`, that works as notification receivers (also known as _subscribers_ ) and the `CMainSignals`, that works as unique notification sender (also known as _publisher_). When some event needs to be published, the message is sent by `static CMainSignals g_signals` to all the subscribers.
+
+// Not ZMQ
+
+`CValidationInterface` is the interface that any class interested in listening to the events should implement. The events are: `UpdatedBlockTip`, `TransactionAddedToMempool`, `TransactionRemovedFromMempool`, `BlockConnected`, `BlockDisconnected, `ChainStateFlushed`, `BlockChecked` and `NewPoWValidBlock`. 
+
+[source,c++]  
+----
+class CValidationInterface {
+protected:
+    ~CValidationInterface() = default;
+    virtual void UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload) {}
+
+    virtual void TransactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {}
+
+    virtual void TransactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason, uint64_t mempool_sequence) {}
+    
+    virtual void BlockConnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex *pindex) {}
+    
+    virtual void BlockDisconnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex* pindex) {}
+    
+    virtual void ChainStateFlushed(const CBlockLocator &locator) {}
+    
+    virtual void BlockChecked(const CBlock&, const BlockValidationState&) {}
+    
+    virtual void NewPoWValidBlock(const CBlockIndex *pindex, const std::shared_ptr<const CBlock>& block) {};
+    friend class CMainSignals;
+};
+----
+
+All of these methods represent the events and although they are defined as `virtual`, they have an empty default implementation `{}`. So the subclasses only needs to implement the methods / events that matter.
+
+The classes that implement them are `src/net_processing.h:PeerManager`, `src/index/base.h:BaseIndex`, `src/interfaces/chain.cpp:NotificationsProxy`, `src/rpc/mining.cpp:submitblock_StateCatcher` and `src/zmq/zmqnotificationinterface:CZMQNotificationInterface`.
+
+The code below shows `PeerManager` implementing `CValidationInterface`. Note that the class does not implement the `TransactionAddedToMempool`, `TransactionRemovedFromMempool`,  `ChainStateFlushed`, what means it have no interest in these events.
+
+[source,c++]  
+----
+class PeerManager final : public CValidationInterface, public NetEventsInterface {
+    /**
+     * Overridden from CValidationInterface.
+     */
+    void BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindexConnected) override;
+    void BlockDisconnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex* pindex) override;
+    /**
+     * Overridden from CValidationInterface.
+     */
+    void UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload) override;
+    /**
+     * Overridden from CValidationInterface.
+     */
+    void BlockChecked(const CBlock& block, const BlockValidationState& state) override;
+    /**
+     * Overridden from CValidationInterface.
+     */
+    void NewPoWValidBlock(const CBlockIndex *pindex, const std::shared_ptr<const CBlock>& pblock) override;
+    // ..
+}
+----
+
+But it is not enough to just implement those methods. To be able to listen to these events, it is necessary to register them as subscribers of `CMainSignals`, which is the unique publisher, so they can receive the notifications. It is done registering the `CValidationInterface` object through the `RegisterSharedValidationInterface(...)` or `RegisterValidationInterface(...)` functions.
+
+`PeerManager`, `BaseIndex`, `CZMQNotificationInterface` use `RegisterValidationInterface(...)` while `NotificationsProxy`, `submitblock_StateCatcher` use `RegisterSharedValidationInterface(...)`. The codes below illustrate this.
+
+[source,c++]  
+----
+bool AppInitMain(...)
+{
+    // ...
+    node.peerman.reset(new PeerManager(chainparams, *node.connman, node.banman.get(), *node.scheduler, chainman, *node.mempool));
+    RegisterValidationInterface(node.peerman.get());
+    // ...
+#if ENABLE_ZMQ
+    g_zmq_notification_interface = CZMQNotificationInterface::Create();
+
+    if (g_zmq_notification_interface) {
+        RegisterValidationInterface(g_zmq_notification_interface);
+    }
+#endif
+    //...
+}
+----
+[source,c++]  
+----
+static RPCHelpMan submitblock()
+{
+    // ...
+    auto sc = std::make_shared<submitblock_StateCatcher>(block.GetHash());
+    RegisterSharedValidationInterface(sc);
+    bool accepted = EnsureChainman(request.context).ProcessNewBlock(Params(), blockptr, /* fForceProcessing */ true, /* fNewBlock */ &new_block);
+    UnregisterSharedValidationInterface(sc);
+    // ...
+}
+----
+
+Calling any of the two methods has the same effect. `RegisterValidationInterface(...)` receives raw pointer as parameter, then convert it to a shared pointer with empty block control and send it to the `RegisterSharedValidationInterface(...)`. Note that the NotificationsProxy` and `submitblock_StateCatcher` classes, that call directly `RegisterSharedValidationInterface(...)`  use `std::make_shared` to wrap the argument in a `std::shared_ptr`. The others call `RegisterValidationInterface(...)`. +
+Using shared pointers instead of raw pointers ensures the pointer is only deleted when the last reference is deleted. More details can be found in the https://github.com/bitcoin/bitcoin/pull/18338[PR #18338].
+
+[source,c++]  
+----
+void RegisterSharedValidationInterface(std::shared_ptr<CValidationInterface> callbacks)
+{
+    // Each connection captures the shared_ptr to ensure that each callback is
+    // executed before the subscriber is destroyed. For more details see #18338.
+    g_signals.m_internals->Register(std::move(callbacks));
+}
+
+void RegisterValidationInterface(CValidationInterface* callbacks)
+{
+    // Create a shared_ptr with a no-op deleter - CValidationInterface lifecycle
+    // is managed by the caller.
+    RegisterSharedValidationInterface({callbacks, [](CValidationInterface*){}});
+}
+----
+
+To register a new subscriber, `RegisterSharedValidationInterface(...)` calls `g_signals.m_internals->Register(...)`. +
+`g_signals` is a static `CMainSignals` that, as said before, is the unique publisher and `m_internals` is `MainSignalsInstance` struct.
+
+This struct has two important properties: `std::list<ListEntry> m_list` and `SingleThreadedSchedulerClient m_schedulerClient`. The first one is the list that stores the references for all the subscribers (objects that implement `CValidationInterface` interface) and the second one queues the messages to be sent and executes them serially.
+
+[source,c++]  
+----
+struct MainSignalsInstance {
+private:
+    struct ListEntry { std::shared_ptr<CValidationInterface> callbacks; int count = 1; };
+    std::list<ListEntry> m_list GUARDED_BY(m_mutex);
+    // ...
+public:
+    SingleThreadedSchedulerClient m_schedulerClient;
+
+    void Register(std::shared_ptr<CValidationInterface> callbacks)
+    {
+        // Register a new CValidationInterface subscriber
+    }
+
+    // ...
+}
+----
+
+`CMainSignals` is the class that broadcast the notifications to all the subscribers. Note the some methods of this class have the same name of the `CValidationInterface` class. This way, it is easy to identify which event is being triggered, since both the publisher and the subscriber use the same name for the methods. Note that `CMainSignals` _does not_ implement `CValidationInterface`, the methods having the same name is just a design decision.
+
+[source,c++]  
+----
+class CMainSignals {
+private:
+    std::unique_ptr<MainSignalsInstance> m_internals;
+
+    // ...
+
+public:
+    
+    // ...
+
+    void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *, bool fInitialDownload);
+    void TransactionAddedToMempool(const CTransactionRef&, uint64_t mempool_sequence);
+    void TransactionRemovedFromMempool(const CTransactionRef&, MemPoolRemovalReason, uint64_t mempool_sequence);
+    void BlockConnected(const std::shared_ptr<const CBlock> &, const CBlockIndex *pindex);
+    void BlockDisconnected(const std::shared_ptr<const CBlock> &, const CBlockIndex* pindex);
+    void ChainStateFlushed(const CBlockLocator &);
+    void BlockChecked(const CBlock&, const BlockValidationState&);
+    void NewPoWValidBlock(const CBlockIndex *, const std::shared_ptr<const CBlock>&);
+};
+----
+
+To notify each of the subscribers, the `MainSignalsInstance m_internals` iterates each `CValidationInterface` element (which is also called `callback`) and constructs a lambda with the params that the message have (in case of `TransactionAddedToMempool`, they are the `tx` and `mempool_sequence`). The lambda body is the execution of `CValidationInterface::TransactionAddedToMempool(...)`. Instead of running the lambda immediately, it is allocated in the `SingleThreadedSchedulerClient m_schedulerClient` to be executed serially.
+
+[source,c++]  
+----
+#define ENQUEUE_AND_LOG_EVENT(event, fmt, name, ...)           \
+    do {                                                       \
+        auto local_name = (name);                              \
+        LOG_EVENT("Enqueuing " fmt, local_name, __VA_ARGS__);  \
+        m_internals->m_schedulerClient.AddToProcessQueue([=] { \
+            LOG_EVENT(fmt, local_name, __VA_ARGS__);           \
+            event();                                           \
+        });                                                    \
+    } while (0)
+// ...
+void CMainSignals::TransactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {
+    auto event = [tx, mempool_sequence, this] {
+        m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.TransactionAddedToMempool(tx, mempool_sequence); });
+    };
+    ENQUEUE_AND_LOG_EVENT(event, "%s: txid=%s wtxid=%s", __func__,
+                          tx->GetHash().ToString(),
+                          tx->GetWitnessHash().ToString());
+}
+----
+
+And finally, to trigger an event, it is only needed to call `GetMainSignals().[event_name]`. The `MemPoolAccept::AcceptSingleTransaction` function below illustrates it, sending the notification that a new transaction is added to mempool, passing as parameters the transaction and the mempool sequence.
+
+[source,c++]  
+----
+bool MemPoolAccept::AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args)
+{
+    // ...
+
+    GetMainSignals().TransactionAddedToMempool(ptx, m_pool.GetAndIncrementSequence());
+
+    return true;
+}
+----
