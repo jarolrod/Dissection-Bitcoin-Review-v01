@@ -90,13 +90,57 @@ New peers can be also manually added with the command `https://github.com/bitcoi
 
 == Concurrency model
 
-The class thread represents a single thread of execution. Threads allow multiple functions to execute concurrently.
+Bitcoin Core does a lot of things at the same time. It dowloads the blockchain, processes new transactions, new blocks, responds to the user events and to network events and so on. 
 
-Most threads are starded (directly or indirectly) in `init.cpp`.
+So a multithreaded application seems appropriate for this case. Threads allow multiple functions to execute concurrently. Since many of these activities are not dependent upon each other so that each activity can be defined as a thread. It improves considerably the application responsiveness. Multithreading also allows to use multiprocessors efficiently, enabling parallelism to execute intensive tasks.
 
-=== `init.cpp:AppInitMain(...)` and `CConnman::Start(...)`
+An example of a task in the Core that can use multiple threads is the verification of scripts in a block. Since there are many transactions in a block, parallelizing the execution considerably improves performance.
 
-When the node starts, `init.cpp:AppInitMain(...)` calls `node.connman->Start(*node.scheduler, connOptions)`. In the `CConnman::Start(...)` the network-related threads are instantiated and excuted.
+Most threads are started (directly or indirectly) in `init.cpp:AppInitMain(...)`. This is the Bitcoin node main function. If the node is started through the `bitcoind` daemon, this function will be call inside the `src/bitcoind.cpp:AppInit(...)`. If it is started through the `bitcoin-qt` graphic interface, `src/interfaces/node.cpp:appInitMain(...)` will be call this function.
+
+Another relevant function is  `CConnman::Start(...)` since network-related threads are instantiated and excuted in it.
+
+The table below shows the threads that will be presented next.
+
+[%autowidth]
+|===
+|Purpose | # threads | Task run
+
+|<<script-verification>>
+|nproc or 16
+|`ThreadScriptCheck()`
+
+|<<loading-blocks>>
+|1
+|`ThreadImport()`
+
+| <<servicing-rpc-calls>>
+|4 or more
+|`ThreadHTTP()`
+
+|<<load-peer-adresses-from-dns-seeds>>
+|1
+|`ThreadDNSAddressSeed()`
+
+|<<send-and-receive-messages-to-and-from-peers>>
+|1
+|`ThreadSocketHandler()`
+
+|<<initializing-network-connections>>
+|1
+|`ThreadOpenConnections()`
+
+
+|<<opening-added-network-connections>>
+|1
+|`ThreadOpenAddedConnections()`
+
+|<<process-messages-from-net-net-processing>>
+|1
+|`ThreadMessageHandler()`
+
+|===
+
 
 === TraceThread
 
@@ -129,6 +173,7 @@ template <typename Callable> void TraceThread(const char* name,  Callable func)
 }
 ----
 
+[[script-verification]]
 === Script Verification
 
 The function that perform the script verification is `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/script/interpreter.cpp#L1937[bool src/script/interpreter.cpp:VerifyScript(...)]`. It is called in at least three points of the application:
@@ -276,7 +321,7 @@ bool AppInitMain(...)
 }
 ----
 
-And finally the command `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L1335[ThreadScriptCheck(i)]` simply initiate a new worker thread one or several times, according to the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L1318[script_threads]` value. Its implementation can be found in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L1823[src/validation.cpp]`.
+And finally the command `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L1335[ThreadScriptCheck(i)]` simply initiates a new worker thread one or several times, according to the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L1318[script_threads]` value. Its implementation can be found in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L1823[src/validation.cpp]`.
 
 [source,c++]  
 ----
@@ -290,8 +335,8 @@ void ThreadScriptCheck(int worker_num) {
 
 Therefore, these are the main steps in verifying the script. However, there is already a change after version v0.21, making it more efficient and reducing the dependency on `boost / thread`. It can be verified in the  https://github.com/bitcoin/bitcoin/pull/18710[PR #18710]. There is also an interesting https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/test/checkqueue_tests.cpp[CCheckQueue unit tests], implemented in the https://github.com/bitcoin/bitcoin/pull/9497/files[PR #9497].
 
-
-=== Loading blocks
+[[loading-blocks]]
+=== Loading Blocks
 
 One of the first thing the node need to do is load the blocks and decides which chain to work.
 
@@ -311,6 +356,7 @@ g_load_block = std::thread(&TraceThread<std::function<void()>>, "loadblk", [=, &
 });
 ----
 
+[[servicing-rpc-calls]]
 === Servicing RPC Calls
 
 To allow user to interact with the node, an HTTP server should be enabled to process the requests. In order to do it, the `init.cpp:AppInitServers(...)` calls `httpserver.cpp:InitHTTPServer()` that, as the name implies, initializes the server and `httpserver.cpp:StartHTTPServer()` that constructs new thread objects.
@@ -337,6 +383,7 @@ void StartHTTPServer()
 }
 ----
 
+<<load-peer-adresses-from-dns-seeds>>
 === Load Peer Adresses From DNS Seeds
 
 As said before, the node initially queries the hardcoded DNS Seeds to find new peers to connect to.
@@ -393,6 +440,7 @@ This flag is set `false` only in the `CConnman::Interrupt()` that interrupts all
 
 `SocketHandler()` handles socket connections, incoming messages (`pnode->vRecvMsg`) and the messages to send (`pnode->cs_vSend`);
 
+[[initializing-network-connections]]
 === Initializing Network Connections
 
 The thread `std::thread threadOpenConnections` opens and manages connections to other peers. Before instantiating this thread, it is checked if the application is started with `-connect=0` or `-connect=<ip>`. +
@@ -426,6 +474,7 @@ void Init(...) {
 
 The use of `-connect=0` to disable automatic outbound connections has been implemented in https://bitcoin.org/en/release/v0.14.0#p2p-protocol-and-network-code[v0.14], with the the https://github.com/bitcoin/bitcoin/pull/9002[PR #9002].
 
+[[opening-added-network-connections]]
 === Opening Added Network Connections
 
 `std::thread threadMessageHandler` is created using `CConnman::ThreadOpenAddedConnections` wrapped into `TraceThread(...)`.
@@ -438,6 +487,7 @@ The use of `-connect=0` to disable automatic outbound connections has been imple
 threadOpenAddedConnections = std::thread(&TraceThread<std::function<void()> >, "addcon", std::function<void()>(std::bind(&CConnman::ThreadOpenAddedConnections, this)));
 ----
 
+[[process-messages-from-net-net-processing]]
 === Process Messages from `net` -> `net_processing`
 
 When the node starts, `init.cpp:AppInitMain(...)` calls `node.connman->Start(*node.scheduler, connOptions)`.
@@ -488,9 +538,20 @@ void CConnman::ThreadMessageHandler()
 
 === Notifications Mechanism (`ValidationInterface`)
 
-A lot of event happens at same time in Bitcoin Core: new messages arrives all time, are processed and sometime, announcements need to be done. For example, if a wallet is connected to Bitcoin Core and a transaction related to this wallet arrives, the wallet needs to be notified; when a new block arrives, the chain and the wallet need to be updated; transaction also can be removed from mempool and it needs to be notified and so on.
+A lot of event happen at same time in Bitcoin Core: new messages arrive all the time, are processed and sometime, announcements need to be made. For example, if a wallet is connected to Bitcoin Core and a transaction related to this wallet arrives, the wallet needs to be notified; when a new block arrives, the chain and the wallet need to be updated; transaction can also be removed from mempool and it needs to be notified and so on.
 
-A good requirement for a mechanism to handle those notifications between components is to be asynchronous since any processing cannot be blocked due to notification as response is not needed.
+In a good software architecture, the components that trigger notifications and those that listen to them are completely decoupled. The message producer sends the notification to the listeners, but it does not know (and does not care) how the message will be processed by the recipient. The sender's main concern should be to ensure that the message is delivered and to do this asynchronously, so as not to block any execution.
+
+A known pattern for asynchronous message service is called _message queue_. When a relevant event is triggered, a message will be are stored on the queue until they are processed by the consumer and deleted. The class that implement this kind of service in Bitcoin Core is the `CScheduler` and the method that keeps the queue running is `void CScheduler::serviceQueue()`. The queue service is started as soon as the application is initiated on `AppInitMain(...)`. This service will be more detailed later.
+
+[source,c++]  
+----
+bool AppInitMain(...)
+{
+    // Start the lightweight task scheduler thread
+    threadGroup.create_thread([&] { TraceThread("scheduler", [&] { node.scheduler->serviceQueue(); }); });
+}
+----
 
 In Bitcoin Core, there are two main classes that implements the notification between the components, the `CValidationInterface`, that works as notification receivers (also known as _subscribers_ ) and the `CMainSignals`, that works as unique notification sender (also known as _publisher_). When some event needs to be published, the message is sent by `static CMainSignals g_signals` to all the subscribers.
 
@@ -693,3 +754,9 @@ bool MemPoolAccept::AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs
     return true;
 }
 ----
+
+The diagram below shows the notifications classes (and some of their fields) presented so far.
+
+.Notification Class Diagram
+image::images/chapter_1_0/notification_classes.svg[]
+[CChainParams, align="center"]
