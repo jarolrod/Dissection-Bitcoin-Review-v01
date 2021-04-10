@@ -21,13 +21,13 @@ Node and wallet are completely different things, although they can eventually co
 
 // ---
 
-Bitcoin Core has been the reference implementation since its first version, and it is not only one software. Bitcoin Core is a solution that includes a node, a graphic interface, and a command line interface. There are also wallet features (including a sophisticated coin selection) but since version v0.21, wallets are no longer created by default. The reason is to make the use of multiple wallets more intuitive.
+Bitcoin Core has been the reference implementation since its first version, and it is not just a single software. Bitcoin Core is a solution that includes a node, a graphic interface, and a command line interface. There are also wallet features (including a sophisticated coin selection) but since version v0.21, wallets are no longer created by default. The reason is to make the use of multiple wallets more intuitive.
 
-To start a node simple run the main app bitcoind implemented in src/bitcoind.cpp. This executable is expected to run as a daemon (in background). It also provides a REST interface, so anyone authorized can access and work with the node.
+To start a node, just run the main app bitcoind implemented in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/bitcoind.cpp[src/bitcoind.cpp]`. This executable is expected to run as a daemon (in background). It also provides a REST interface, so anyone authorized can access and work with the node.
 
-After running the daemon, the user will be able to interact with the node through a command-line application called bitcoin-cli that is implemented in src/bitcoin-cli.cpp. It implements some RPC commands that are sent via REST to the node (the bitcoind daemon) and process the results.
+After running the daemon, the user will be able to interact with the node through a command-line application called bitcoin-cli that is implemented in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/bitcoin-cli.cpp[src/bitcoin-cli.cpp]`. It implements some RPC commands that are sent via REST to the node (the bitcoind daemon) and process the results.
 
-Another and simpler and friendly option to start the node and operate it is starting bitcoin-qt, implemented in src/qt/main.cpp. This one is an intuitive graphic interface, which all interactions happen through buttons. The user can create multiple wallets and check other information about the node as the peers’ connection and network statistics. 
+Another simpler and friendlier option to start the node and operate it is starting bitcoin-qt, implemented in `src/qt/main.cpp`. This is an intuitive graphical interface, where all interactions take place via buttons. The user can create multiple wallets and check other information about the node as the peers’ connection and network statistics. 
 
 
 .Bitcoin Core Executables
@@ -38,7 +38,7 @@ image::images/chapter_1_0/executables.svg[]
 
 === Protocol - P2P
 
-Bitcoin is a peer-to-peer protocol. There is no central server that can determine the rules. So, to be able to communicate with other peers and exchange information about the network, transactions and the chain state, the nodes need to establish a common protocol, so they can understand each other.
+Bitcoin is a peer-to-peer protocol. There is no central server that can determine the rules. So, to be able to communicate with other peers and exchange informations, the nodes need to establish a common protocol, so they can understand each other.
 
 The file `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/protocol.h[src/protocol.h]` defines all types of messages (`https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/protocol.h#L62[namespace NetMsgType]`) that will be used in this communication. As can be seen in the code below, each message has a comment with a succinct description of its purpose.
 
@@ -74,7 +74,7 @@ extern const char* GETDATA;
 }
 ----
 
-But how does the node find the other peers to exchange messages ? When running for first time, the node connect to a bunch of server denominated DNS Seeds which provides a list of IP addresses that are running (or were recently running) a Bitcoin client. After connecting to those IP addresses, the node starts to exchange messages and other new addresses with the peers. +
+But how does the node find the other peers to exchange messages ? When running for first time, the node connect to a bunch of server denominated DNS Seeds which provides a list of IP addresses that have recently been running a Bitcoin client. After connecting to those IP addresses, the node starts to exchange messages with the peers. +
 DNS seeds are  hardcoded and stored in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/chainparams.cpp[src/chainparams.cpp]`.
 
 [source,c++]  
@@ -90,13 +90,13 @@ New peers can be also manually added with the command `https://github.com/bitcoi
 
 == Concurrency model
 
-Bitcoin Core does a lot of things at the same time. It dowloads the blockchain, processes new transactions, new blocks, responds to the user events and to network events and so on. 
+Bitcoin Core does a lot of things at the same time. It dowloads the blockchain, processes new transactions, validates new blocks, responds to the user events and to network events and so on. 
 
-So a multithreaded application seems appropriate for this case. Threads allow multiple functions to execute concurrently. Since many of these activities are not dependent upon each other so that each activity can be defined as a thread. It improves considerably the application responsiveness. Multithreading also allows to use multiprocessors efficiently, enabling parallelism to execute intensive tasks.
+Therefore, a multithreaded application seems appropriate for this case. Threads allow multiple functions to be executed concurrently, improving considerably the application responsiveness. Multithreading also allows to use multiprocessors efficiently, enabling parallelism to perform intensive tasks.
 
-An example of a task in the Bitcoin Core that can use multiple threads is the verification of scripts in a block. Since there are many transactions in a block, parallelizing the execution considerably improves performance.
+An example of a task in the Bitcoin Core that can use multiple threads is the verification of scripts in a block. Since there are many transactions in a block, parallelizing the execution greatly improves performance.
 
-Most threads are started (directly or indirectly) in `init.cpp:AppInitMain(...)`. This is the Bitcoin node main function. If the node is started through the `bitcoind` daemon, this function will be call inside the `src/bitcoind.cpp:AppInit(...)`. If it is started through the `bitcoin-qt` graphic interface, `src/interfaces/node.cpp:appInitMain(...)` will be call this function.
+Most threads are started (directly or indirectly) in `init.cpp:AppInitMain(...)`. This is the Bitcoin node main function. If the node is started through the `bitcoind` daemon, this function will be call inside the `src/bitcoind.cpp:AppInit(...)`. If it is started through the `bitcoin-qt` graphic interface, `src/interfaces/node.cpp:appInitMain(...)` will call this function.
 
 Another relevant function is  `CConnman::Start(...)` since network-related threads are instantiated and excuted in it.
 
