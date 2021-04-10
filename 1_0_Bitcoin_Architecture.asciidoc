@@ -94,7 +94,7 @@ Bitcoin Core does a lot of things at the same time. It dowloads the blockchain, 
 
 So a multithreaded application seems appropriate for this case. Threads allow multiple functions to execute concurrently. Since many of these activities are not dependent upon each other so that each activity can be defined as a thread. It improves considerably the application responsiveness. Multithreading also allows to use multiprocessors efficiently, enabling parallelism to execute intensive tasks.
 
-An example of a task in the Core that can use multiple threads is the verification of scripts in a block. Since there are many transactions in a block, parallelizing the execution considerably improves performance.
+An example of a task in the Bitcoin Core that can use multiple threads is the verification of scripts in a block. Since there are many transactions in a block, parallelizing the execution considerably improves performance.
 
 Most threads are started (directly or indirectly) in `init.cpp:AppInitMain(...)`. This is the Bitcoin node main function. If the node is started through the `bitcoind` daemon, this function will be call inside the `src/bitcoind.cpp:AppInit(...)`. If it is started through the `bitcoin-qt` graphic interface, `src/interfaces/node.cpp:appInitMain(...)` will be call this function.
 
@@ -114,7 +114,7 @@ The table below shows the threads that will be presented next.
 |1
 |`ThreadImport()`
 
-| <<servicing-rpc-calls>>
+|<<servicing-rpc-calls>>
 |4 or more
 |`ThreadHTTP()`
 
@@ -383,7 +383,7 @@ void StartHTTPServer()
 }
 ----
 
-<<load-peer-adresses-from-dns-seeds>>
+[[load-peer-adresses-from-dns-seeds]]
 === Load Peer Adresses From DNS Seeds
 
 As said before, the node initially queries the hardcoded DNS Seeds to find new peers to connect to.
