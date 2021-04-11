@@ -833,6 +833,8 @@ These addresses are stored in `std::vector<CAddress> m_anchors`.
 
 The reason there are two files is a risk mitigation measure implemented in the https://github.com/bitcoin/bitcoin/pull/15759[PR #15759] and the https://github.com/bitcoin/bitcoin/pull/17428[PR #17428]. The first change was motivated by the https://arxiv.org/pdf/1812.00942.pdf[TxProbe] paper, which  describes that transaction relay leaks information that adversaries can use to infer the network topology. The second one was motivated by the https://eprint.iacr.org/2015/263.pdf[Eclipse Attack] paper, that presents an attack that allows an adversary controlling a sufficient number of IP addresses to monopolize all connections to and from a victim bitcoin node.
 
+The connection to the peers from `anchors.dat` is called block-relay-only and to the peers from `peers.dat` is called outbound-full-relay. The first type only relays blocks/block headers and the second one, includes all messages type.
+
 [source,c++]  
 ----
 bool CConnman::Start(CScheduler& scheduler, const Options& connOptions)
@@ -865,8 +867,16 @@ bool CConnman::Start(CScheduler& scheduler, const Options& connOptions)
 
 Then, the `threadSocketHandler` is started. It enable the node to accept new connections (function `CConnman::AcceptConnection(...)`), to receive and send data.
 
-//Next, the  `threadDNSAddressSeed`, `threadOpenAddedConnections`, `ThreadOpenConnections` and the `ThreadMessageHandler` levle.
+Next, the following threads are initiated sequentially:   `threadDNSAddressSeed`, `threadOpenAddedConnections`, `ThreadOpenConnections` and the `ThreadMessageHandler`.
 
+The first one checks if the node was able to connect successfully to at least 2 peers loaded from the files. If so, it skips querying DNS and the thread execution finishes. If there is a reasonable number of peers in `CAddrMan& addrman`, it is spent some time trying them first. This improves user privacy by creating fewer identifying DNS requests, reduces trust by giving seeds less influence on the network topology, and reduces traffic to the seeds.
 
+The `threadOpenAddedConnections` calls `GetAddedNodeInfo()` to get informations about the nodes added using the RPC "addnode" RPC command. These nodes are stored in the `CConnman` member field `std::vector<std::string> vAddedNodes`, that is protected by `cs_vAddedNodes` mutex. `ThreadOpenAddedConnections()` is a infinite loop that checks the if an added addresses is connected and tries to connect if it is not.
 
+`ThreadOpenConnections` tries to open connections to the peers. Opening block-relay connections to addresses from anchors.dat gets the highest priority. Then opening outbound-full-relay is the priority until the node's full-relay capacity is hit.
 
+And finally, `ThreadMessageHandler` is the thread that receives messages, process them in `src/net_processing.cpp:PeerManagerImpl::ProcessMessages(...)` and send messages to the peers.
+
+=== `net_processing.{h,cpp}`
+
+The main function of this regin is `src/net_processing.cpp:PeerManagerImpl::ProcessMessages(...)`, that is a giant conditional to handle the messages sent by the peers.
