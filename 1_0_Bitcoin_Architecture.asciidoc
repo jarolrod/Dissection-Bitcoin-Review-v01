@@ -19,16 +19,15 @@ Signing a transaction means the user is moving the money and has authorized the 
 
 Node and wallet are completely different things, although they can eventually come together in the same software. Node is related to bitcoin network and protocol while a wallet is related to the one’s private keys and transactions. It is very important to know the difference between these two concepts to be able to have a better understanding of Bitcoin architecture.
 
+Bitcoin Core has been the reference implementation since its first version. It is not just a single software. Bitcoin Core is a solution that includes a node, a graphical interface, and a command line interface. There are also wallet features (including a sophisticated coin selection) but since version v0.21, wallets are no longer created by default. The reason for this is to make the use of multiple wallets more intuitive.
+
+To start a node, just run the main app bitcoind implemented in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/bitcoind.cpp[src/bitcoind.cpp]`. This executable is expected to run as a daemon (in the background). It also provides a REST interface, so anyone authorized can access and work with the node.
+
+After running the daemon, the user will be able to interact with the node through a command-line application called bitcoin-cli that is implemented in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/bitcoin-cli.cpp[src/bitcoin-cli.cpp]`. It implements some RPC commands that are sent via REST to the node (the bitcoind daemon) and displays the results.
+
+Another simpler and friendlier option to start the node and operate it is starting bitcoin-qt, implemented in `src/qt/main.cpp`. This is an intuitive graphical interface, where all interactions take place via buttons. The user can create multiple wallets and check other information about the node such as the peer connection and network statistics. 
+
 // ---
-
-Bitcoin Core has been the reference implementation since its first version, and it is not just a single software. Bitcoin Core is a solution that includes a node, a graphic interface, and a command line interface. There are also wallet features (including a sophisticated coin selection) but since version v0.21, wallets are no longer created by default. The reason is to make the use of multiple wallets more intuitive.
-
-To start a node, just run the main app bitcoind implemented in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/bitcoind.cpp[src/bitcoind.cpp]`. This executable is expected to run as a daemon (in background). It also provides a REST interface, so anyone authorized can access and work with the node.
-
-After running the daemon, the user will be able to interact with the node through a command-line application called bitcoin-cli that is implemented in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/bitcoin-cli.cpp[src/bitcoin-cli.cpp]`. It implements some RPC commands that are sent via REST to the node (the bitcoind daemon) and process the results.
-
-Another simpler and friendlier option to start the node and operate it is starting bitcoin-qt, implemented in `src/qt/main.cpp`. This is an intuitive graphical interface, where all interactions take place via buttons. The user can create multiple wallets and check other information about the node as the peers’ connection and network statistics. 
-
 
 .Bitcoin Core Executables
 image::images/chapter_1_0/executables.svg[]
@@ -99,6 +98,18 @@ An example of a task in the Bitcoin Core that can use multiple threads is the ve
 Most threads are started (directly or indirectly) in `init.cpp:AppInitMain(...)`. This is the Bitcoin node main function. If the node is started through the `bitcoind` daemon, this function will be call inside the `src/bitcoind.cpp:AppInit(...)`. If it is started through the `bitcoin-qt` graphic interface, `src/interfaces/node.cpp:appInitMain(...)` will call this function.
 
 Another relevant function is  `CConnman::Start(...)` since network-related threads are instantiated and excuted in it.
+
+[source,c++]  
+----
+bool AppInitMain(...)
+{
+    // ...
+    if (!node.connman->Start(*node.scheduler, connOptions)) {
+        return false;
+    }
+    // ...
+}
+----
 
 The table below shows the threads that will be presented next.
 
@@ -760,3 +771,102 @@ The diagram below shows the notifications classes (and some of their fields) pre
 .Notification Class Diagram
 image::images/chapter_1_0/notification_classes.svg[]
 [CChainParams, align="center"]
+
+=== Regions
+
+=== `net.{h,cpp}`
+
+// std::unique_ptr<CAddrMan> addrman;
+// std::unique_ptr<CConnman> connman;
+// std::unique_ptr<PeerManager> peerman;
+// std::unique_ptr<BanMan> banman;
+// std::unique_ptr<CScheduler> scheduler;
+
+The `src/net.{h,cpp}` files implement the most basic network level. It is the "bottom" of the Bitcoin Core stack. It handles network communication with the P2P network.
+
+// node.connman = std::make_unique<CConnman>(GetRand(std::numeric_limits<uint64_t>::max()), GetRand(std::numeric_limits<uint64_t>::max()), *node.addrman, args.GetBoolArg("-networkactive", true));
+// nSeed0 & nSeed1In - id
+
+The network connection is enabled when `!node.connman->Start(*node.scheduler, connOptions)` is called in the application main function `src.cpp:AppInitMain(...)`. The `node` variable refers to the `struct NodeContext`. It is a struct containing references to chain state and connection state. This is used by the init function, RPC, GUI and test code to pass object references around
+without needing to declare the same variables and parameters repeatedly, or to use globals. The struct is defined in `src/node/context.h`.
+
+Before this struct was created, the global variable `g_conman` was used to manage the connection. But using global variables reduces the modularity and flexibility of the program, so the https://github.com/bitcoin/bitcoin/pull/16839[PR #16839] has got rid of the some global variables and has made `g_conman` a NodeContext member (now it is called `connman`).
+
+[source,c++]  
+----
+struct NodeContext {
+    std::unique_ptr<CAddrMan> addrman;
+    std::unique_ptr<CConnman> connman;
+    std::unique_ptr<CTxMemPool> mempool;
+    std::unique_ptr<CBlockPolicyEstimator> fee_estimator;
+    std::unique_ptr<PeerManager> peerman;
+    // ...
+}
+----
+
+The `connOptions` parameter is a `CConnman::Options` object. It stores many of configurable network parameters the user can define when starting the node. If no parameters are defined, the default values are in `net.h`.
+
+[source,c++]  
+----
+// src/init.cpp
+bool AppInitMain(...)
+{
+    // ...
+    CConnman::Options connOptions;
+    connOptions.nLocalServices = nLocalServices;
+    connOptions.nMaxConnections = nMaxConnections;
+    connOptions.m_max_outbound_full_relay = std::min(MAX_OUTBOUND_FULL_RELAY_CONNECTIONS, connOptions.nMaxConnections);
+    connOptions.m_max_outbound_block_relay = std::min(MAX_BLOCK_RELAY_ONLY_CONNECTIONS, connOptions.nMaxConnections-connOptions.m_max_outbound_full_relay);
+    connOptions.nMaxAddnode = MAX_ADDNODE_CONNECTIONS;
+    connOptions.nMaxFeeler = MAX_FEELER_CONNECTIONS;
+    // ...
+}
+----
+
+The `scheduler` parameter is a `CScheduler` object. In this function, it is used to schedule how often the peer IP addresses will be stored on the disk. In this case, it is 15 minutes, as defined in the `DUMP_PEERS_INTERVAL` variable.  The file that stores information about the peers is called `peers.dat`.
+
+The function `bool CConnman::Start(...)` loads the addresses from peers.dat and stores them in `CAddrMan& addrman` variable. `CAddrMan` has a table with information about all stored peers, the `std::map<int, CAddrInfo> mapInfo`, and oanther field with the peers ID and their network addresses, the `std::map<CNetAddr, int> mapAddr`.
+
+Then, the file `anchors.dat` is deserialized. This file contains addresses that were saved during the previous clean shutdown. 
+The node will attempt to make block-relay-only connections to them.
+These addresses are stored in `std::vector<CAddress> m_anchors`.
+
+The reason there are two files is a risk mitigation measure implemented in the https://github.com/bitcoin/bitcoin/pull/15759[PR #15759] and the https://github.com/bitcoin/bitcoin/pull/17428[PR #17428]. The first change was motivated by the https://arxiv.org/pdf/1812.00942.pdf[TxProbe] paper, which  describes that transaction relay leaks information that adversaries can use to infer the network topology. The second one was motivated by the https://eprint.iacr.org/2015/263.pdf[Eclipse Attack] paper, that presents an attack that allows an adversary controlling a sufficient number of IP addresses to monopolize all connections to and from a victim bitcoin node.
+
+[source,c++]  
+----
+bool CConnman::Start(CScheduler& scheduler, const Options& connOptions)
+{
+    // ...
+    // Load addresses from peers.dat
+    int64_t nStart = GetTimeMillis();
+    {
+        CAddrDB adb;
+        if (adb.Read(addrman))
+            LogPrintf("Loaded %i addresses from peers.dat  %dms\n", addrman.size(), GetTimeMillis() - nStart);
+        else {
+            addrman.Clear(); // Addrman can be in an inconsistent state after failure, reset it
+            LogPrintf("Recreating peers.dat\n");
+            DumpAddresses();
+        }
+    }
+
+    if (m_use_addrman_outgoing) {
+        // Load addresses from anchors.dat
+        m_anchors = ReadAnchors(GetDataDir() / ANCHORS_DATABASE_FILENAME);
+        if (m_anchors.size() > MAX_BLOCK_RELAY_ONLY_ANCHORS) {
+            m_anchors.resize(MAX_BLOCK_RELAY_ONLY_ANCHORS);
+        }
+        LogPrintf("%i block-relay-only anchors will be tried for connections.\n", m_anchors.size());
+    }
+    // ...
+}
+----
+
+Then, the `threadSocketHandler` is started. It enable the node to accept new connections (function `CConnman::AcceptConnection(...)`), to receive and send data.
+
+//Next, the  `threadDNSAddressSeed`, `threadOpenAddedConnections`, `ThreadOpenConnections` and the `ThreadMessageHandler` levle.
+
+
+
+
