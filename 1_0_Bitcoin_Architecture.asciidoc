@@ -547,6 +547,7 @@ void CConnman::ThreadMessageHandler()
 }
 ----
 
+[[notification-mechanism]]
 === Notifications Mechanism (`ValidationInterface`)
 
 A lot of event happen at same time in Bitcoin Core: new messages arrive all the time, are processed and sometime, announcements need to be made. For example, if a wallet is connected to Bitcoin Core and a transaction related to this wallet arrives, the wallet needs to be notified; when a new block arrives, the chain and the wallet need to be updated; transaction can also be removed from mempool and it needs to be notified and so on.
@@ -879,4 +880,150 @@ And finally, `ThreadMessageHandler` is the thread that receives messages, proces
 
 === `net_processing.{h,cpp}`
 
-The main function of this regin is `src/net_processing.cpp:PeerManagerImpl::ProcessMessages(...)`, that is a giant conditional to handle the messages sent by the peers.
+The main class of this region is the `PeerManagerImpl`. It implements three interfaces: `CValidationInterface`, `NetEventsInterface` and `PeerManager`. 
+The `CValidationInterface` was already discussed in <<notification-mechanism>>, `NetEventsInterface` is about handling network event triggered by the peers, like initializing or removing a peer. And `PeerManager` interface is high level interaction with the peer such as processing their messages, managing peer's misbehavior score or relaying transaction.
+
+.Class PeerManagerImpl
+image::images/chapter_1_0/PeerManagerImpl.svg[]
+[PeerManagerImpl, align="center"]
+
+{empty} +
+// Add PeerManagerImpl code
+Note that there are two methods with very similiar names: `bool PeerManagerImpl::ProcessMessages(...)` and `void PeerManagerImpl::ProcessMessage(...).` The first thing to observe that they are from diferent interfaces. The first method comes from the `NetEventsInterface` interface and the second one, from `PeerManager` interface.
+
+`bool PeerManagerImpl::ProcessMessages(...)` is a lower level method that is called by the previous region. It firstly checks if there are _getdata_ requests from the peer and in that event, it calls `PeerManagerImpl::ProcessGetData(...)`. Then, it check for orphan transaction and calls `PeerManagerImpl::ProcessOrphanTx(...)` if so. If neither of these is the case, the `PeerManagerImpl::ProcessMessage(...)` function will be called.
+
+[source,c++]  
+----
+bool PeerManagerImpl::ProcessMessages(...)
+{
+    bool fMoreWork = false;
+
+    PeerRef peer = GetPeerRef(pfrom->GetId());
+    if (peer == nullptr) return false;
+
+    {
+        LOCK(peer->m_getdata_requests_mutex);
+        if (!peer->m_getdata_requests.empty()) {
+            ProcessGetData(*pfrom, *peer, interruptMsgProc);
+        }
+    }
+
+    {
+        LOCK2(cs_main, g_cs_orphans);
+        if (!peer->m_orphan_work_set.empty()) {
+            ProcessOrphanTx(peer->m_orphan_work_set);
+        }
+    }
+
+    try {
+        ProcessMessage(*pfrom, msg_type, msg.m_recv, msg.m_time, interruptMsgProc);
+        // ...
+    }
+
+    // ...
+}
+----
+
+`src/net_processing.cpp:PeerManagerImpl::ProcessMessages(...)` is the main function of this region and it tis a is a giant conditional to handle the messages sent by the peers. It is a high level network function that understand the messages type and knows how to handle them, extracting the data and sending him to the next region, `validation.{h,cpp}`.
+
+[source,c++]  
+----
+void PeerManagerImpl::ProcessMessage(...)
+{
+    // ...
+    if (msg_type == NetMsgType::VERACK) {
+        // ...
+        return;
+    }
+
+    if (msg_type == NetMsgType::SENDHEADERS) {
+        // ...
+        return;
+    }
+
+    if (msg_type == NetMsgType::SENDCMPCT) {
+        // ...
+        return;
+    }
+
+    // ...
+
+    if (msg_type == NetMsgType::INV) {
+        // ...
+        return;
+    }
+}
+----
+
+// There is GETDATA message type and it is also handled in ProcessMessage(...). The same applies to TX message / orphan tx.
+
+`PeerManager` interface also provides the method `void Misbehaving(...)` to handle with potentially malicious nodes. It increments peer's misbehavior score. Whenever an possibly harmful behavior is identified, this method is called, passing as parameter the `nodeId`, how much points the node must added (`howmuch`) and the message that describes the misbehavior (`message`).
+
+[source,c++]  
+----
+void PeerManagerImpl::Misbehaving(const NodeId pnode, const int howmuch, const std::string& message)
+{
+    // ..
+
+    LOCK(peer->m_misbehavior_mutex);
+    peer->m_misbehavior_score += howmuch;
+    const std::string message_prefixed = message.empty() ? "" : (": " + message);
+    if (peer->m_misbehavior_score >= DISCOURAGEMENT_THRESHOLD && peer->m_misbehavior_score - howmuch < DISCOURAGEMENT_THRESHOLD) {
+        LogPrint(BCLog::NET, "Misbehaving: peer=%d (%d -> %d) DISCOURAGE THRESHOLD EXCEEDED%s\n", pnode, peer->m_misbehavior_score - howmuch, peer->m_misbehavior_score, message_prefixed);
+        peer->m_should_discourage = true;
+    } else {
+        LogPrint(BCLog::NET, "Misbehaving: peer=%d (%d -> %d)%s\n", pnode, peer->m_misbehavior_score - howmuch, peer->m_misbehavior_score, message_prefixed);
+    }
+}
+----
+
+If the `m_misbehavior_score` attribute of the peer is equal or greater than `DISCOURAGEMENT_THRESHOLD` value (which is 100), mark the it to be discouraged, meaning the peer might be disconnected and added to the discouragement filter. The discouraged nodes are stored in `src/banman.h:BanMan::m_discouraged`.
+
+There are two methods focused in applying penalties if there is something wrong. They are `PeerManagerImpl::MaybePunishNodeForBlock(...)` and `PeerManagerImpl::MaybePunishNodeForTx(...)`. In these methods, it can be seen that not all conflicts are necessarily invalid. 
+
+There are some situations where the `Misbehaving(...)` is called to handle messages that are not in accordance with the Bitcoin protocol. This list is not exhaustive.
+
+[%autowidth]
+|===
+|Misbehavior | # Points Added
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L1075[Peer provides a block which the data does not match the data committed to by the PoW]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L1092[Peer sends a block that has been cached as invalid]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L1100[Peer sends a block whose previous block is invalid]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L1103[Peer sends a block whose previous block the node does not have]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L1124[Peer sends a transaction that does not comply with consensus rules]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L1775[Peer requests an index in GETBLOCKTXN  higher than the total number of transactions in a block]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L1824[Peer sends non-connecting headers]
+|20
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L1832[Peer sends non-continuous headers sequence]
+|20
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L2583[Peer sends ADDR or ADDRv2 message whose size is greater than the allowed] (1000 addresses, as defined in the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h#L56[src/net.h:MAX_ADDR_TO_SEND]`)
+|20
+
+|https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L2661[Peer sends INV message whose number of entries is greater than the allowed] (50000 entries, as defined in the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L74[src/net_processing.h:MAX_INV_SZ]`) +
+https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L2735[The same verification is done for GETDATA message]
+|20
+
+|===
+
+=== `validation.{h,cpp}`
+
+The validation file handles verifying received data and modifying of in-memory data structures for chainstate and transaction (mempool) based on of the validation rules.
+
+Although `CValidationInterface` is not directly related to `validation.cpp` files, almost all events of this interface are triggered in the validation file, except for the `TransactionRemovedFromMempool` event which is called in `txmempool.cpp`. All the events are triggered calling the publisher `GetMainSignals()`.
+
