@@ -1045,7 +1045,7 @@ https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net_processing.cpp#L2735[The
 [[validationhcpp]]
 === `validation.{h,cpp}`
 
-The validation file handles verifying received data and modifying of in-memory data structures for chainstate and transaction (mempool) based on of the validation rules.
+The validation file handles verifying received data and modifying of in-memory data structures for chainstate and transaction (mempool) based on certain acceptance rules.
 
 Although `CValidationInterface` is not directly related to `validation.cpp` files, almost all events of this interface are triggered in the validation file, except for the `TransactionRemovedFromMempool` event which is called in `txmempool.cpp`. All the events are triggered by calling the publisher `GetMainSignals()`.
 
