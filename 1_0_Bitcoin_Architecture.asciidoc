@@ -27,8 +27,6 @@ After running the daemon, the user will be able to interact with the node throug
 
 Another simpler and friendlier option to start the node and operate it is starting bitcoin-qt, implemented in `src/qt/main.cpp`. This is an intuitive graphical interface, where all interactions take place via buttons. The user can create multiple wallets and check other information about the node such as the peer connection and network statistics. 
 
-// ---
-
 .Bitcoin Core Executables
 image::images/chapter_1_0/executables.svg[]
 [CChainParams, align="center"]
@@ -37,7 +35,7 @@ image::images/chapter_1_0/executables.svg[]
 
 === Protocol - P2P
 
-Bitcoin is a peer-to-peer protocol. There is no central server that can determine the rules. So, to be able to communicate with other peers and exchange informations, the nodes need to establish a common protocol, so they can understand each other.
+Bitcoin is a peer-to-peer protocol. There is no central server that can determine the rules. So, to be able to communicate with other peers and exchange information, the nodes need to establish a common protocol, so they can understand each other.
 
 The file `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/protocol.h[src/protocol.h]` defines all types of messages (`https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/protocol.h#L62[namespace NetMsgType]`) that will be used in this communication. As can be seen in the code below, each message has a comment with a succinct description of its purpose.
 
@@ -73,7 +71,7 @@ extern const char* GETDATA;
 }
 ----
 
-But how does the node find the other peers to exchange messages ? When running for first time, the node connect to a bunch of server denominated DNS Seeds which provides a list of IP addresses that have recently been running a Bitcoin client. After connecting to those IP addresses, the node starts to exchange messages with the peers. +
+But how does the node find the other peers to exchange messages ? When running for the first time, the node connects to a bunch of servers denominated DNS Seeds which provide a list of IP addresses that have recently been running a Bitcoin client. After connecting to those IP addresses, the node starts to exchange messages with the peers. +
 DNS seeds are  hardcoded and stored in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/chainparams.cpp[src/chainparams.cpp]`.
 
 [source,c++]  
@@ -85,19 +83,19 @@ vSeeds.emplace_back("seed.bitcoinstats.com"); // Christian Decker, supports x1 -
 vSeeds.emplace_back("seed.bitcoin.jonasschnelli.ch"); // Jonas Schnelli, only supports x1, x5, x9, and xd
 ----
 
-New peers can be also manually added with the command `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L442[-addnode=<addr>]`. The connection parameters, like `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h#L78[DEFAULT_MAX_PEER_CONNECTIONS]` or `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h#L64[MAX_ADDNODE_CONNECTIONS]`, can be found in the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h[net.h]` file.
+New peers can also be manually added with the command `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L442[-addnode=<addr>]`. The connection parameters, like `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h#L78[DEFAULT_MAX_PEER_CONNECTIONS]` or `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h#L64[MAX_ADDNODE_CONNECTIONS]`, can be found in the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.h[net.h]` file.
 
 == Concurrency model
 
-Bitcoin Core does a lot of things at the same time. It dowloads the blockchain, processes new transactions, validates new blocks, responds to the user events and to network events and so on. 
+Bitcoin Core does a lot of things at the same time. It downloads the blockchain, processes new transactions, validates new blocks, responds to the user events and to network events and so on. 
 
-Therefore, a multithreaded application seems appropriate for this case. Threads allow multiple functions to be executed concurrently, improving considerably the application responsiveness. Multithreading also allows to use multiprocessors efficiently, enabling parallelism to perform intensive tasks.
+Therefore, a multithreaded application seems appropriate for this case. Threads allow multiple functions to be executed concurrently, improving considerably the application's responsiveness. Multithreading also allows the use of multiprocessors efficiently, enabling parallelism to perform intensive tasks.
 
 An example of a task in the Bitcoin Core that can use multiple threads is the verification of scripts in a block. Since there are many transactions in a block, parallelizing the execution greatly improves performance.
 
-Most threads are started (directly or indirectly) in `init.cpp:AppInitMain(...)`. This is the Bitcoin node main function. If the node is started through the `bitcoind` daemon, this function will be call inside the `src/bitcoind.cpp:AppInit(...)`. If it is started through the `bitcoin-qt` graphic interface, `src/interfaces/node.cpp:appInitMain(...)` will call this function.
+Most threads are started (directly or indirectly) in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L1263[init.cpp:AppInitMain(...)]`. This is the Bitcoin node's main function. If the node is started through the `bitcoind` daemon, this function will be called inside the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/bitcoind.cpp#L40[src/bitcoind.cpp:AppInit(...)]`. If it is started through the `bitcoin-qt` graphic interface, `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/interfaces/node.cpp#L61[src/interfaces/node.cpp:appInitMain(...)]` will call the function.
 
-Another relevant function is  `CConnman::Start(...)` since network-related threads are instantiated and excuted in it.
+Another relevant function is  `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/net.cpp#L2448[CConnman::Start(...)]` since network-related threads are instantiated and excuted in it.
 
 [source,c++]  
 ----
@@ -112,7 +110,7 @@ bool AppInitMain(...)
 ----
 
 The table below shows the threads that will be presented next.
-
+// ---
 [%autowidth]
 |===
 |Purpose | # threads | Task run
@@ -247,7 +245,7 @@ bool CheckInputScripts(const CTransaction& tx, ..., std::vector<CScriptCheck> *p
 }
 ----
 
-The only function that makes use of script validation parallelization is the aforementioned `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L1946[bool CChainState::ConnectBlock(...)]` due to the quantity of transactions in a block. If the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L2134[g_parallel_script_checks]` is true, the script verification vector that has been filled in `CheckInputScripts(...)` is allocated in  `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L2134[CCheckQueueControl<CScriptCheck> control(...)]`. The `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L2218[control.Wait()]` initiates the their execution and wait for the end. +
+The only function that makes use of script validation parallelization is the aforementioned `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L1946[bool CChainState::ConnectBlock(...)]` due to the quantity of transactions in a block. If the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L2134[g_parallel_script_checks]` is true, the script verification vector that has been filled in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L1516[CheckInputScripts(...)]` is allocated in  `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L2134[CCheckQueueControl<CScriptCheck> control(...)]`. The `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L2218[control.Wait()]` initiates the their execution and wait for the end. +
 `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L135[g_parallel_script_checks]` is a global parameter and it will be better detailed soon.
 
 [source,c++]  
@@ -344,16 +342,16 @@ void ThreadScriptCheck(int worker_num) {
 }
 ----
 
-Therefore, these are the main steps in verifying the script. However, there is already a change after version v0.21, making it more efficient and reducing the dependency on `boost / thread`. It can be verified in the  https://github.com/bitcoin/bitcoin/pull/18710[PR #18710]. There is also an interesting https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/test/checkqueue_tests.cpp[CCheckQueue unit tests], implemented in the https://github.com/bitcoin/bitcoin/pull/9497/files[PR #9497].
+Therefore, these are the main steps in verifying the script. However, there is already a change after version v0.21, making it more efficient and https://github.com/bitcoin/bitcoin/pull/18710/files#diff-35390fbd9f90018a4bf7d663283bb8b812cc52c4e277e115eb9426c79df439a9L13[reducing the dependency] on `<boost/thread>`. It can be verified in the  https://github.com/bitcoin/bitcoin/pull/18710[PR #18710]. There is also an interesting https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/test/checkqueue_tests.cpp[CCheckQueue unit tests], implemented in the https://github.com/bitcoin/bitcoin/pull/9497/files[PR #9497].
 
 [[loading-blocks]]
 === Loading Blocks
 
 One of the first thing the node need to do is load the blocks and decides which chain to work.
 
-The thread `g_load_block` invoke the function `void ThreadImport(...)` to load the blocks on startup. If the user is rebuilding the blockchain index (`-reindex`) or is loading blocks directly from files (`-loadblock`), it will be handled in this thread. After loading the blocks, it tries to find the best chain in `CChainState::ActivateBestChain(...)`.
+The thread `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L1880[g_load_block]` invoke the function `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L694[void ThreadImport(...)]` to load the blocks on startup. If the user is rebuilding the blockchain index (`-reindex`) or is loading blocks directly from files (`-loadblock`), it will be handled in this thread. After loading the blocks, it tries to find the best chain in `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/validation.cpp#L2870[CChainState::ActivateBestChain(...)]`.
 
-It happens in the `init.cpp:AppInitMain(...)`.
+It happens in the `https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/init.cpp#L1263[init.cpp:AppInitMain(...)]`.
 
 [source,c++]  
 ----
@@ -1059,9 +1057,11 @@ When a new block arrives (`NetMsgType::BLOCK`), it will be intercepted by the Pr
 
 This class was https://github.com/bitcoin/bitcoin/pull/17737/files#diff-d3c243938494b10666b44404a27af7d84b44a72b85a27431e0c89e181462ca6eR815[introduced] in the https://github.com/bitcoin/bitcoin/pull/17737[PR #17737] as part of the https://github.com/bitcoin/bitcoin/projects/11[assumeutxo project]. `Assume UTXO` is an idea similar to `assumevalid`. In `assumevalid`, there is a hash that is hard-coded into the code, the user assumes all the blocks in the chain that ends in that hash and their transactions have valid scripts. This is an optimization for startup, but the node skips script validation, implicitly trusting the developers who hard-coded the default block hash.  Bitcoin Core will still validate most parts of the block, including Proof of Work, UTXOs, amounts, etc. The only thing that is not validated are scripts because they are expensive. `assumevalid` has been introduced in the https://github.com/bitcoin/bitcoin/pull/9484[PR #9484].
 
-The `assumeutxo` does something similiar, but for the UTXO Set. It would be a way to initialize a node using a headers chain and a serialized version of the UTXO state which was generated from another node at some block height. A node that makes use of this UTXO "snapshot" would specify a hash and expect the content of the resulting UTXO set to yield this hash after deserialization.
+The `assumeutxo` does something similiar, but for the UTXO Set. It would be a way to initialize a node using a headers chain and a serialized version of the UTXO state which was generated from another node at some block height. The basic idea is to allow nodes to initialize using a serialized version of the UTXO set rendered by another node at some predetermined height. The initializing node syncs the headers chain from the network, then obtains and loads one of these UTXO snapshots.
 
-This allows wallets and other software using the full node to start receiving and sending transactions within minutes of the node being started instead of having to wait hours or days, as is the case now for a newly started node, since it is only necessary to sync blocks between the base of the snapshot and the current network tip.
+Based upon the snapshot, the node is able to quickly reconstruct its chainstate, and compares a hash of the resulting UTXO set to a preordained hash hard-coded in the software (exactly like `assumevalid`). 
+
+The node then syncs to the network tip and afterwards begins a simultaneous background validation (conventional IBD) up to the base height of the snapshot in order to achieve full validation. Crucially, even while the background validation is happening the node can validate incoming blocks and transact with the benefit of the full (assumed-valid) UTXO set. Snapshots could be obtained from multiple separate peers in the same manner as block download
 
 The project is ongoing and much of the code is still being refactored. ChainstateManager is one of the newly created classes for the project. It provides an interface for managing the one or two chainstates: an IBD chainstate generated by downloading blocks, and an optional snapshot chainstate loaded from a UTXO snapshot.
 
@@ -1107,3 +1107,78 @@ CChainState& ChainstateManager::InitializeChainstate(CTxMemPool& mempool, const 
 The method `init.cpp:AppInitMain(...)` calls `chainman.InitializeChainstate(*Assert(node.mempool));` to initialize a new chain state. If, for some reason, it has already been created, an exception will be thrown. Note that the second parameter `snapshot_blockhash` has no value. In the current version, v0.21, it is not yet possible to start the server by passing a snapshot block hash as parameter. In the function, if the `snapshot_blockhash` is null, `m_ibd_chainstate` will be active chainstate (`m_active_chainstate`).  This code snippet makes it clear that the priority for the active chainstate is snapshot chainstate.
 
 ChainstateManager has other methods related to `assumeutxo` such as `ActivateSnapshot(...)` and `ValidatedChainstate(...)`, but they are not being used yet, except for https://github.com/bitcoin/bitcoin/blob/v0.21.0/src/test/validation_chainstatemanager_tests.cpp[test unit]. But there are other methods related to block management like `ProcessNewBlockHeaders(...)` and `ProcessNewBlock(...)`. These functions are originally defined in `validation.h`, but the https://github.com/bitcoin/bitcoin/pull/18698[PR #18698] has made them members of ChainstateManager.
+
+`ProcessNewBlockHeaders(...)` are called in `netprocessing.cpp` when a _cmpctblock_ message arrives or through the `PeerManagerImpl::ProcessHeadersMessage(` function when _headers_ message arrives. `ProcessNewBlock(...)` are called when _block_, _blocktxn_ or _cmpctblock_ message arrives. so that the <<net_processinghcpp>> region can make the communication with the <<validationhcpp>> region, the class `PeerManagerImpl` has an `ChainstateManager& m_chainman` variable member.
+
+[source,c++]  
+----
+class PeerManagerImpl final : public PeerManager
+{
+    // ...
+    ChainstateManager& m_chainman;
+    // ...
+
+    void PeerManagerImpl::ProcessMessage(...) {
+        if (msg_type == NetMsgType::CMPCTBLOCK)
+        {
+            if (!m_chainman.ProcessNewBlockHeaders(...) {
+                // ...
+            }
+            // ...
+            if (fBlockReconstructed) {
+                // ...
+                m_chainman.ProcessNewBlock(...);
+                //...
+            }
+        }
+
+        if (msg_type == NetMsgType::BLOCKTXN)
+        {
+            // ...
+            if (fBlockRead) {
+                //...
+                m_chainman.ProcessNewBlock(...);
+                // ...
+            }
+        }
+
+        if (msg_type == NetMsgType::BLOCK) {
+            // ...
+            m_chainman.ProcessNewBlock(...);
+            // ...
+        }
+    }
+}
+----
+
+Other important method is `ChainstateManager::ActiveChainstate()`, that is used to find out which  chainstate is active (`m_snapshot_chainstate` or `m_ibd_chainstate`) and returns a `CChainState` object.
+
+`CChainState` stores and provides an API to update our local knowledge of the current best chain. For example, when a new block arrives, `CChainState` will perform most of the the work. `ChainstateManager::ProcessNewBlock()` will trigger the following methods sequentially: `CChainState::AcceptBlock(...)`,  `CChainState::ActivateBestChain(...)`, `CChainState::ActivateBestChainStep(...)`, `CChainState::ConnectTip(...)` and `CChainState::ConnectBlock(...)`. Note that all these methods are member of `CChainState` and they manage the entire cycle of accepting or rejecting a new block.
+
+`CChainState::AcceptBlock(...)` calls `SaveBlockToDisk(...)` that calls `WriteBlockToDisk(...)`. This first method is used to find the file position (ex: 157 from `blk00157.dat`) and the second one to write block to history file.
+
+[source,c++]  
+----
+static bool WriteBlockToDisk(....)
+{
+    // Open history file to append
+    CAutoFile fileout(OpenBlockFile(pos), SER_DISK, CLIENT_VERSION);
+    //...
+
+    // Write index header
+    unsigned int nSize = GetSerializeSize(block, fileout.GetVersion());
+    fileout << messageStart << nSize;
+
+    // Write block
+    //...
+    fileout << block;
+
+    return true;
+}
+----
+
+The method above serializes the block to the file (`fileout << block`). The serialization process will be described in the Serizlization chapter.
+
+But the important point is that the <<validationhcpp>> region also contains some utility functions for storing and reading data from disk. `WriteBlockToDisk(...)` is just an example. There are others like `ReadBlockFromDisk(...)`, `DumpMempool(...)`, `LoadMempool(...)` and `bool CChainState::FlushStateToDisk(...)`. The latter is particulary important.  
+
+This method is called frequently, at any change in chain state or during via shutdown through `CChainState::ForceFlushStateToDisk()`. 
